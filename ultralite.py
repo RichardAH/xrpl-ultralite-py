@@ -536,7 +536,7 @@ def REQUEST_AS(connection, binprefix, raccount = False):
         depth = nodeid[-1]
         nodehash = False
 
-        if nodetype == 3: # inner node, uncompressed wire format, record decompressed
+        if nodetype == 3: # inner node, compressed wire format, decompress...
             blank_branch = binascii.unhexlify('0' * 64)
             reconstructed_node = b''
             upto = 0
@@ -551,6 +551,8 @@ def REQUEST_AS(connection, binprefix, raccount = False):
             x.nodedata = reconstructed_node
             state["account_path_nodes"][depth] = reconstructed_node
             nodetype = 2
+       
+        # execution to here means it's either a leaf or uncompressed 
         
         nodehash = SHA512H(b'MIN\x00' + x.nodedata[:-1])
         state["account_path_nodes"][depth] = x.nodedata
@@ -583,19 +585,12 @@ def REQUEST_AS(connection, binprefix, raccount = False):
 
     sent_request = False
 
-    total_bytes_received = 0
-    time_started = time.time()
-
 
     #message loop
     while True:
 
         #collect the raw packet from the connection
         raw_packet = connection.recv(0xffff)
-        
-        total_bytes_received += len(raw_packet)
-        #print("incoming data rate: " + str(math.floor(total_bytes_received/(time.time() - time_started)/1024)) + " kib/s -- " + str(total_bytes_received) + " bytes received in " + str(time.time() - time_started) + " seconds")
-
 
         if partial_message_size > 0:
             partial_message_upto += len(raw_packet)
@@ -686,30 +681,20 @@ def REQUEST_AS(connection, binprefix, raccount = False):
 
             ledger_hash = message.validation[16:48] #todo: parse this properly
 
-            if True:
-                if sent_request:
-                    continue        
+            if sent_request:
+                continue        
 
-                sent_request = True
+            sent_request = True
 
-                if last_requested_ledger == ledger_hash.hex():
-                    continue
-
-            last_requested_ledger = ledger_hash.hex()
             
             print("mtVALIDATION:")
-            #print("ledger_hash: " + message.validation.hex()[32:96])
-            #print("ledger_seq: " + message.validation.hex()[12:20])
-            #print("full: " + message.validation.hex())
 
             validation = parse_stobject(message.validation, True)
-
 
             state["requested_ledger_hash"] = message.validation[16:48] #todo pull this correctly from the object above
 
             time.sleep(4)
             
-            #NB endianness might? be wrong on some machines here
             ledger_seq = int(message.validation.hex()[12:20], 16)
 
             # first request the base ledger info
@@ -763,15 +748,5 @@ if not data['proven_correct']:
     print("Unable to verify data authenticity")
 else:
     print("object verified")
-    exit() 
-    for k in data:
-        if k == "account_path_nodes":
-            print("account_path_nodes:")
-            for n in data[k]:
-                print("depth " + str(n) + ": " + str(binascii.hexlify(data[k][n]), 'utf-8'))
-        elif k == "account_depth":
-            print(k + ":" + str(data[k]))
-        elif k == "proven_correct":
-            print("PROVEN CORRECT: " + str(data[k]))
-        else:
-            print(k + ": " + str(binascii.hexlify(data[k]), 'utf-8'))
+
+exit() 
