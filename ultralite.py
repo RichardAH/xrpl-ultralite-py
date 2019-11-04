@@ -6,12 +6,17 @@
 #todo: add UNL
 server = "202.177.24.140" #"s.altnet.rippletest.net"
 port = 51235 
+UNL = [] #we'll populate from the below if specified
+validator_site = "https://vl.ripple.com"
+
 
 from ecdsa import SigningKey, SECP256k1
 from base58r import base58r
 from serializer import serializer
 from socket import *
 from stlookup import *
+import base64
+import urllib.request
 import ripple_pb2
 import binascii
 import operator
@@ -332,6 +337,7 @@ def parse_stobject(x, print_out = False):
 
         upto += size
 
+    return sto
 
 def CONNECT(server, port):            
     print("Attempting to connect to " + server + " : " + str(port))
@@ -466,7 +472,6 @@ def REQUEST_AS(connection, binprefix, raccount = False):
     else:
         requested_node = SHA512H(binprefix).hex() 
 
-
     # data may come in asynchronously
     # so we collect it all first and then compute at the end
     state = {
@@ -585,6 +590,7 @@ def REQUEST_AS(connection, binprefix, raccount = False):
 
     sent_request = False
 
+    validations = {}
 
     #message loop
     while True:
@@ -679,23 +685,43 @@ def REQUEST_AS(connection, binprefix, raccount = False):
         if message_type == 41: #(mtVALIDATION)
             #todo check if validations are from our selected UNL
 
-            ledger_hash = message.validation[16:48] #todo: parse this properly
-
             if sent_request:
                 continue        
 
-            sent_request = True
 
+            sto = parse_stobject(message.validation, False)#True)
+
+            ledger_hash = sto['LedgerHash']
             
-            print("mtVALIDATION:")
+            signing_key = sto['SigningPubKey']
 
-            validation = parse_stobject(message.validation, True)
+            if not ledger_hash in validations:
+                validations[ledger_hash] = {}
+
+            #todo: check validation signature
+            if signing_key in UNL and not signing_key in validations[ledger_hash]:
+                validations[ledger_hash][signing_key] = True
+           
+
+            print("mtVALIDATION PK:" + str(binascii.hexlify(signing_key), 'utf-8') + " LH: " + str(binascii.hexlify(ledger_hash), 'utf-8'))
+
+            #print(str(binascii.hexlify(message.validation), 'utf-8'))
+
+            #print( "PK in UNL? " + str( (signing_key in UNL) ) )
 
             state["requested_ledger_hash"] = message.validation[16:48] #todo pull this correctly from the object above
 
-            time.sleep(4)
+            if len(validations[ledger_hash]) >= len(UNL) * 0.8:
+                # consensus on this ledger
+                print("Reached consensus on " + str(binascii.hexlify(ledger_hash), 'utf-8'))
+                sent_request = True 
+            else:
+                continue
+
+            # execution to here indicates the ledger is validated and we want to make our request now
+            time.sleep(1) #ensure everyone has the ledger on file
             
-            ledger_seq = int(message.validation.hex()[12:20], 16)
+            ledger_seq = int(message.validation.hex()[12:20], 16) #todo change this to pull from sto
 
             # first request the base ledger info
             gl = ripple_pb2.TMGetLedger()
@@ -736,13 +762,31 @@ def REQUEST_AS(connection, binprefix, raccount = False):
 
     return state
 
+# build UNL from the validator site specified, if any
+if type(validator_site) == str and len(validator_site) > 0:
+    vl = urllib.request.urlopen(validator_site).read().decode('utf-8')
+    vl = json.loads(vl)
+    if vl['public_key'].upper() != 'ED2677ABFFD1B33AC6FBC3062B71F1E8397C1505E1C42C64D11AD1B28FF73F4734':
+        print("attempted to fetch validator list from " + validator_site + " but found unknown list signing key!")
+        exit(1)
+    #todo: check validator list signature here
+
+    payload = json.loads(base64.b64decode(vl['blob']))
+    st = base64.b64decode(payload['validators'][0]['manifest'])
+    for v in payload['validators']:
+        #todo: check signatures of each validator here
+        sto = parse_stobject(base64.b64decode(v['manifest']))
+        UNL.append(sto['SigningPubKey']) 
+
+    print("Loaded a UNL from validator site " + validator_site + " consisting of " + str(len(UNL)) + " validators")
+
 connection = CONNECT(server, port)
 
 if connection == False:
     print("could not connect!")
     quit()
 
-data = REQUEST_AS(connection, b'\x00O', 'rToastMYRQh8boeo5Ys1CnPySmt3c9x3Y')
+data = REQUEST_AS(connection, b'\x00a', 'rToastMYRQh8boeo5Ys1CnPySmt3c9x3Y')
 
 if not data['proven_correct']:
     print("Unable to verify data authenticity")
