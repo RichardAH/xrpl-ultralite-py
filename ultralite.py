@@ -18,6 +18,7 @@ from socket import *
 from stlookup import *
 import base64
 import urllib.request
+import pprint
 import ripple_pb2
 import binascii
 import operator
@@ -52,6 +53,9 @@ if os.path.exists(peer_file):
    
 peers.add(bootstrap_server)
 
+def PPRINT(x):
+    pp = pprint.PrettyPrinter(indent=4)
+    pp.pprint(x)
 
 def DECODE_ADDRESS(address):
     decoded = base58r.b58decode_check(address)
@@ -276,9 +280,20 @@ def parse_vlencoded(x):
 
 def parse_stobject(x, print_out = False):
 
+    def add_entry(sto, fieldname, entry):
+        if fieldname in sto and not type(sto[fieldname]) == list:
+            sto[fieldname] = [sto[fieldname]]
+        if fieldname in sto:
+            sto[fieldname].append(entry)
+        else:
+            sto[fieldname] = entry
+        
+
     try:
         indentlvl = 0
-        sto = {}
+        root_sto = {}
+        sto = root_sto
+        stack = []
         upto = 0
         while upto < len(x):
             typecode = 0
@@ -340,17 +355,18 @@ def parse_stobject(x, print_out = False):
                 else:
                     # not xrp
                     size = 48
-            elif typecode == 15: #array
+            elif typecode == 15 or typecode == 14: #object/array
                 indentlvl += 1
                 if fieldcode == 1:
                     indentlvl -= 2
-                if print_out:
-                    print("")
-                continue 
-            elif typecode == 14: #object
-                indentlvl += 1
-                if fieldcode == 1:
-                    indentlvl -= 2
+                    if len(stack) > 0:
+                        sto = stack.pop()
+                else:
+                    new_level = {}
+                    add_entry(sto, fieldname, new_level)
+                    stack.append(sto)
+                    sto = new_level
+ 
                 if print_out:
                     print("")
                 continue
@@ -361,7 +377,7 @@ def parse_stobject(x, print_out = False):
 
             if is_amount and size == 8:
                 val = int(str(binascii.hexlify(x[upto:upto+size]), 'utf-8'), 16) - 0x4000000000000000
-                sto[fieldname] = {"currency": "xrp",  "value": val}
+                add_entry(sto, fieldname, {"currency": "xrp",  "value": val})
                 if print_out:
                     print ("XRP " + str(val/1000000))
             elif is_amount:
@@ -383,7 +399,6 @@ def parse_stobject(x, print_out = False):
                     mantissa += x[upto+6] << 8
                     mantissa += x[upto+7]
 
-# + x[upto+6]<<8 + x[upto+5]<<16 + x[upto+4]<<24 + x[upto+3]<<32 + x[upto+2]<<40 + ( x[upto+1] & 0b111111 ) <<48 
                     exponent = 0
                     exponent += x[upto] << 8
                     exponent += x[upto+1]
@@ -400,14 +415,14 @@ def parse_stobject(x, print_out = False):
 
                 issuer = x[upto+28:upto+48]
 
-                sto[fieldname] = {"currency": curcode,  "value": amount, "issuer": issuer}
+                add_entry(sto, fieldname, {"currency": curcode,  "value": amount, "issuer": issuer})
                 
                 if print_out:
                     print (curcode + ": " + str(amount) + " [Issuer:" + ENCODE_ADDRESS(issuer) + "]")
 
             elif size <= 8:
                 val = int(str(binascii.hexlify(x[upto:upto+size]), 'utf-8'), 16)
-                sto[fieldname] = val
+                add_entry(sto, fieldname, val)
                 if print_out:
                     if 'flags' in STLookup[typecode][fieldcode]['field_name'].lower():
                         print( "{0:b}".format(val) )
@@ -419,11 +434,12 @@ def parse_stobject(x, print_out = False):
                         print(ENCODE_ADDRESS(x[upto:upto+size]))
                     else:
                         print( str(binascii.hexlify(x[upto:upto+size]), 'utf-8'))
-                sto[fieldname] = x[upto:upto+size]
+
+                add_entry(sto, fieldname, x[upto:upto+size])
 
             upto += size
 
-        return sto
+        return root_sto
     except Exception as e:
         print("failed to parse stobject")
         print(e)
@@ -779,7 +795,6 @@ def REQUEST_LOOP():
 
                     tx = parse_stobject(tx, True)
 
-                
 
             # todo: start a clock and request retry counter to attempt to fetch these tx before trying a history node
     
@@ -883,7 +898,9 @@ def REQUEST_LOOP():
 
                     print("nodelen: " + str(len(x.nodedata)))
                     vl = parse_vlencoded(x.nodedata[:-33])
+                    print("tx proper:")
                     parse_stobject(vl[0], True)
+                    print("meta:")
                     parse_stobject(vl[1], True)
 #                    #parse_stobject(x.nodedata[2:-33], True)
 
