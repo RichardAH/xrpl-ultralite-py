@@ -526,22 +526,47 @@ def REQUEST_LOOP():
     request_state = {}
     
     def new_state():
-        return {
-            "proven_correct": False, #indicates all the hashes have been checked up the tree
+        ret = {
             "requested_ledger_hash": False,
             "calculated_ledger_hash": False,
             "reported_account_root_hash": False,
             "calculated_account_root_hash": False,
-            "account_depth": False,
-            "account_key": False,
-            "account_path_nodes": {}, #these are the inner nodes that lead down to the account, including root, indexed by depth
             "got_base_data" :  False,
-            "got_account_data" :  False
+            "accounts": {}
         }
+        print(accounts)
+        for acc in accounts:
+            rn = accounts[acc]['requested_node']
+            ret['accounts'][rn] = { 
+                "account_depth": False,
+                "account_key": False,
+                "account_path_nodes": {}, #these are the inner nodes that lead down to the account, including root, indexed by depth
+                "got_account_data" :  False,
+                "acc_seq_no":  -1, #last account sequence number
+                "last_tx_ledger_seq_no": -1, #last ledger a transaction changed this account
+                "last_tx_id": '',
+                "proven_correct": False, #indicates all the hashes have been checked up the tree
+            }
+        return ret
 
-    def check_if_done(state):
-        print("check if done on " + str(binascii.hexlify(state['requested_ledger_hash']), 'utf-8') + ' - ' + str(state['got_base_data']) + ", " + str(state['got_account_data'])) 
-        if state['got_base_data'] and state['got_account_data']:
+    def verify_as_nodes(state):
+
+        for acc in state['accounts']:
+            astate = state['accounts'][acc]
+            if not state['got_base_data'] or not astate['got_account_data']:
+                print('waiting for account/base data') 
+                return False
+
+        proven_correct_count = 0
+
+        for acc in state['accounts']:
+
+            astate = state['accounts'][acc]
+
+            if astate['proven_correct']:
+                proven_correct_count += 1 
+                continue
+
             # check the hashes, if any don't match we'll return early with the default proven_correct value (False)
             if state["requested_ledger_hash"] != state["calculated_ledger_hash"]:
                 print("requested ledger doesn't match calculated ledger")
@@ -551,7 +576,7 @@ def REQUEST_LOOP():
                 print("account root hash doesn't match")
                 return True
 
-            if state["account_depth"] + 1 != len(state["account_path_nodes"]):
+            if astate["account_depth"] + 1 != len(astate["account_path_nodes"]):
                 print("account depth doesn't match / missing inner nodes")
                 return True
 
@@ -563,22 +588,23 @@ def REQUEST_LOOP():
                         return True
                 return False      
 
-            
             #compute up the tree now
-            for i in range(state['account_depth'], 0, -1):
+            for i in range(astate['account_depth'], 0, -1):
                 computed_hash = b''
-                if i == state['account_depth']: #leaf node is computed with MLN\0 not MIN\0
-                    computed_hash = SHA512H(b'MLN\x00' + state['account_path_nodes'][i][:-1])
+                if i == astate['account_depth']: #leaf node is computed with MLN\0 not MIN\0
+                    computed_hash = SHA512H(b'MLN\x00' + astate['account_path_nodes'][i][:-1])
                 else:
-                    computed_hash = SHA512H(b'MIN\x00' + state['account_path_nodes'][i][:-1])
-                if not node_contains(state['account_path_nodes'][i-1], computed_hash):
+                    computed_hash = SHA512H(b'MIN\x00' + astate['account_path_nodes'][i][:-1])
+                if not node_contains(astate['account_path_nodes'][i-1], computed_hash):
                     print("inner node at depth " + str(i) + " computed hash " + str(binascii.hexlify(computed_hash), 'utf-8') + " wasn't found in the node above")
                     return True
 
-            state["proven_correct"] = True 
-            return True
+            astate["proven_correct"] = True 
+            proven_correct_count += 1
 
-        return False
+        if len(state['accounts']) == proven_correct_count:
+            print("all proven correct")
+        return len(state['accounts']) == proven_correct_count
 
 
     def process_as_node(ledger_hash, x, nodeid = False):
@@ -594,6 +620,11 @@ def REQUEST_LOOP():
                 nodeid = x.nodeid
         depth = nodeid[-1]
         nodehash = False
+        
+        for key in state['accounts']:
+            if not nodeid.hex()[:depth] == key[:depth]:
+                continue
+            astate = state['accounts'][key]
 
         if nodetype == 3: # inner node, compressed wire format, decompress...
             blank_branch = binascii.unhexlify('0' * 64)
@@ -608,32 +639,38 @@ def REQUEST_LOOP():
            
             reconstructed_node += b'\x02'
             x.nodedata = reconstructed_node
-            state["account_path_nodes"][depth] = reconstructed_node
+            astate["account_path_nodes"][depth] = reconstructed_node
             nodetype = 2
        
         # execution to here means it's either a leaf or uncompressed 
         
         nodehash = SHA512H(b'MIN\x00' + x.nodedata[:-1])
-        state["account_path_nodes"][depth] = x.nodedata
+        
+
+        astate["account_path_nodes"][depth] = x.nodedata
         
         print("AS KEY: " + nodeid.hex())
 
         if nodetype == 1: # leaf node, wire format
             #this is our sought after account
             nodehash = SHA512H(b'MLN\x00' + x.nodedata[:-1])
-            state["account_key"] = nodeid
-            state["account_depth"] = nodeid[-1]
-            state["reported_account_hash"] = x.nodedata[-33:-1]
-            print("FOUND: " + str(binascii.hexlify(state["reported_account_hash"]), 'utf-8'))
-            parse_stobject(x.nodedata[:-33], True)
-            state['got_account_data'] = True
-            
+            astate["account_key"] = nodeid
+            astate["account_depth"] = nodeid[-1]
+            astate["reported_account_hash"] = x.nodedata[-33:-1]
+            print("FOUND: " + str(binascii.hexlify(astate["reported_account_hash"]), 'utf-8'))
+            sto = parse_stobject(x.nodedata[:-33], True)
+            astate['got_account_data'] = True
+            astate['acc_seq_no'] = sto['Sequence']
+            astate['last_tx_id'] = sto['PreviousTxnID']
+            astate['last_tx_ledger_seq_no'] = sto['PreviousTxnLgrSeq']
 
         elif nodetype != 2: # inner node, compressed, wire format
             print("UNKNOWN NODE " + str(nodetype))
 
-
         return nodehash 
+
+    def fetch_acc_txs(state):
+        pass    
 
     
     partial_message = []
@@ -712,8 +749,9 @@ def REQUEST_LOOP():
                     #print(binascii.hexlify(x.nodedata))
                     nodeid += 1
 
-                if check_if_done(state):
-                    print("request finished")
+                if verify_as_nodes(state):
+                    print("as node request finished")
+                    fetch_acc_txs(state)
 
             elif message.type == ripple_pb2.TMLedgerInfoType.liTX_NODE:
                 for x in message.nodes:
@@ -728,8 +766,9 @@ def REQUEST_LOOP():
                 for x in message.nodes:
                     process_as_node(msg_ledger_hash, x)
 
-                if check_if_done(state):
-                    print("request finished")
+                if verify_as_nodes(state):
+                    fetch_acc_txs(state)
+                    print("as node request finished")
 
         if message_type == 42: #GetObjectByHash
             pass
@@ -838,20 +877,24 @@ def REQUEST_LOOP():
                 gl.queryDepth = 0
                 connection.send(ENCODE_MESSAGE('mtGetLedger', gl))
                 #continue
- 
-            # now request the account state info
-            gl = ripple_pb2.TMGetLedger()
-            gl.ledgerHash = ledger_hash
-            gl.ledgerSeq = ledger_seq
-            gl.itype = ripple_pb2.TMLedgerInfoType.liAS_NODE
-           
-            for l in range(1, len(requested_node)):
-                v = hex(l)[2:]
-                key = requested_node[0:l] + ('0' * (66 - l - len(v))) + v
-                gl.nodeIDs.append(binascii.unhexlify(key))
 
-            gl.queryDepth = 0
-            connection.send(ENCODE_MESSAGE('mtGetLedger', gl))
+            for acc in accounts:
+                requested_node = accounts[acc]['requested_node']
+
+                print('requesting node: ' + requested_node)
+                # now request the account state info
+                gl = ripple_pb2.TMGetLedger()
+                gl.ledgerHash = ledger_hash
+                gl.ledgerSeq = ledger_seq
+                gl.itype = ripple_pb2.TMLedgerInfoType.liAS_NODE
+               
+                for l in range(1, len(requested_node)):
+                    v = hex(l)[2:]
+                    key = requested_node[0:l] + ('0' * (66 - l - len(v))) + v
+                    gl.nodeIDs.append(binascii.unhexlify(key))
+
+                gl.queryDepth = 0
+                connection.send(ENCODE_MESSAGE('mtGetLedger', gl))
 
             
 
@@ -882,7 +925,7 @@ for raccount in argv:
         requested_node = SHA512H(binprefix).hex() 
 
 
-    accounts[acc] = { "node": requested_node }
+    accounts[acc] = { "requested_node": requested_node }
     if not os.path.exists(acc):
         os.mkdir(acc)
 
