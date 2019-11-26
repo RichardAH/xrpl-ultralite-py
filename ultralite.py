@@ -4,12 +4,14 @@
 #change this to localhost if you want to connect to your own node
 #todo: add a peer list that is updated when connecting
 #todo: add UNL
-server = "202.177.24.140" #"s.altnet.rippletest.net"
-port = 51235 
+bootstrap_server = "s1.ripple.com:51235" #this will be connected to if no peers are currently available from the peer file
+full_history_peers = ["s2.ripple.com"] # we will use these to backfill our transaction history
 UNL = [] #we'll populate from the below if specified
 validator_site = "https://vl.ripple.com"
+peer_file = "peers.txt"
 
-
+from interval import IntervalSet
+from datetime import datetime
 from ecdsa import SigningKey, SECP256k1
 from base58r import base58r
 from serializer import serializer
@@ -23,12 +25,36 @@ import operator
 import tlslite
 import hashlib
 import base64
+import select
 import ecdsa
 import time
 import json
 import re
 import math
 import time
+import os
+import sys
+
+argv = sys.argv[1:]
+
+accounts = {}
+
+peers = set()
+
+connections = []
+
+if os.path.exists(peer_file):
+    f = open(peer_file, "r+")
+    if f:
+        content = f.readlines()
+        f.close()
+        for ip in content:
+            peers.add(ip)
+   
+peers.add(bootstrap_server)
+
+def TIME():
+    return int(datetime.timestamp(datetime.now()))
 
 def SHA512(b):
     h = hashlib.sha512()
@@ -212,135 +238,168 @@ def ENCODE_MESSAGE(message_type, message):
     buf = length.to_bytes(4, byteorder='big') + message_type.to_bytes(2, byteorder='big') + payload
     return buf 
 
-def parse_stobject(x, print_out = False):
-
-    sto = {}
-
+#this is for a list of stobjects packed together
+def parse_vlencoded(x):
+    ret = []
+    size = 0
     upto = 0
     while upto < len(x):
-        typecode = 0
-        fieldcode = 0
-    
-        high = x[upto] >> 4
-        low = x[upto] & 0xF
-        if high == 0 and low == 0:
-            typecode = x[upto + 1]
-            fieldcode = x[upto + 2]
-            upto += 3
-        elif high == 0 and low != 0:
-            fieldcode = low
-            typecode = x[upto + 1]
-            upto += 2
-        elif high != 0 and low == 0:
-            typecode = high
-            fieldcode = x[upto + 1]
-            upto += 2
-        else:
-            typecode = high
-            fieldcode = low
+        if x[upto] < 193:
+            size = x[upto]
             upto += 1
-
-        if not typecode in STLookup or not fieldcode in STLookup[typecode]:
-            print("warning could not parse STObject, typecode = " + str(typecode) + ", fieldcode = " + str(fieldcode))
-            return False
-
-        if print_out:
-            print(STLookup[typecode][fieldcode]['field_name'] + ": ", end='')
-
-        fieldname = STLookup[typecode][fieldcode]['field_name']
-
-        is_amount = STLookup[typecode]['type_name'].lower() == 'amount'
-
-        size = -1
-        if STLookup[typecode][fieldcode]['vle']:
-            if x[upto] < 193:
-                size = x[upto]
-                upto += 1    
-            elif x[upto] < 241:
-                size = 193 + ((x[upto] - 193) * 256) + x[upto+1]
-                upto += 2
-            elif x[upto] < 255:
-                size = 12481 + ((x[upto] - 241) * 65536) + (x[upto+1] * 256) + x[upto+2]
-                upto += 3
-            else:
-                print("warning invalid vle lead byte: " + str(x[upto]))
-                return False 
-        elif 'size' in STLookup[typecode]:
-            size = STLookup[typecode]['size']
-        elif is_amount:
-            # work out size from context
-            if x[upto] >> 6 == 1:
-                # xrp
-                size = 8
-            else:
-                # not xrp
-                size = 48
+        elif x[upto] < 241:
+            size = 193 + ((x[upto] - 193) * 256) + x[upto+1]
+            upto += 2
+        elif x[upto] < 255:
+            size = 12481 + ((x[upto] - 241) * 65536) + (x[upto+1] * 256) + x[upto+2]
+            upto += 3
         else:
-            print("warning could not determine size of stobject")
+            print("warning invalid vle lead byte: " + str(x[upto]))
             return False
-                
-
-        if is_amount and size == 8:
-            val = int(str(binascii.hexlify(x[upto:upto+size]), 'utf-8'), 16) - 0x4000000000000000
-            sto[fieldname] = {"currency": "xrp",  "value": val}
-            if print_out:
-                print ("XRP " + str(val/1000000))
-        elif is_amount:
-
-            #print("RAW AMOUNT DATA: " + str(binascii.hexlify(x[upto:upto+384]), 'utf-8'))
-
-            curcode = str(x[upto+20:upto+23], 'utf-8')
-
-            amount = 0
-            if x[upto:upto+8] != b'\x80\x00\x00\x00\x00\x00\x00\x00':
-                #do the amount math since it's not the special zero case
-                # first 10 bits are flags and expontent, final 54 are mantissa
-                mantissa = int(str(binascii.hexlify(x[upto+1:upto+8]), 'utf-8'), 16)
-                # the two msb of mantissa are bleedover from exponent
-                # probably should have assembled the value byte by byte instead of doing this
-                if mantissa >= 0x8000000:
-                    mantissa -= 0x8000000
-                if mantissa >= 0x4000000:
-                    mantissa -= 0x4000000
-
-                exponent = int(str(binascii.hexlify(x[upto:upto+2]), 'utf-8'), 16)
-                exponent >>= 6
-                exponent &= 0xFF
-               
-                # as per spec we need to sub 97 from exponent now 
-                exponent -= 97
-
-                sign = (x[upto] >> 7) & 1     
-            
-                amount = mantissa * 10 ** exponent
-                
-
-            issuer = x[upto+28:upto+48]
-
-            sto[fieldname] = {"currency": curcode,  "value": amount, "issuer": issuer}
-            
-            if print_out:
-                print (curcode + ": " + str(amount) + " [Issuer:" + str(binascii.hexlify(issuer), 'utf-8') + "]")
-
-        elif size <= 8:
-            val = int(str(binascii.hexlify(x[upto:upto+size]), 'utf-8'), 16)
-            sto[fieldname] = val
-            if print_out:
-                if 'flags' in STLookup[typecode][fieldcode]['field_name'].lower():
-                    print( "{0:b}".format(val) )
-                else:
-                    print(val)
-        else:
-            if print_out:
-                print( str(binascii.hexlify(x[upto:upto+size]), 'utf-8'))
-            sto[fieldname] = x[upto:upto+size]
-
+        ret.append(x[upto:upto+size])
         upto += size
+    return ret
 
-    return sto
+def parse_stobject(x, print_out = False):
 
-def CONNECT(server, port):            
-    print("Attempting to connect to " + server + " : " + str(port))
+    try:
+        sto = {}
+        upto = 0
+        while upto < len(x):
+            typecode = 0
+            fieldcode = 0
+        
+            high = x[upto] >> 4
+            low = x[upto] & 0xF
+            if high == 0 and low == 0:
+                typecode = x[upto + 1]
+                fieldcode = x[upto + 2]
+                upto += 3
+            elif high == 0 and low != 0:
+                fieldcode = low
+                typecode = x[upto + 1]
+                upto += 2
+            elif high != 0 and low == 0:
+                typecode = high
+                fieldcode = x[upto + 1]
+                upto += 2
+            else:
+                typecode = high
+                fieldcode = low
+                upto += 1
+
+            if not typecode in STLookup or not fieldcode in STLookup[typecode]:
+                print("warning could not parse STObject, typecode = " + str(typecode) + ", fieldcode = " + str(fieldcode))
+                return False
+
+            if print_out:
+                print(STLookup[typecode][fieldcode]['field_name'] + ": ", end='')
+
+            fieldname = STLookup[typecode][fieldcode]['field_name']
+
+            is_amount = STLookup[typecode]['type_name'].lower() == 'amount'
+
+            size = -1
+            if STLookup[typecode][fieldcode]['vle']:
+                if x[upto] < 193:
+                    size = x[upto]
+                    upto += 1    
+                elif x[upto] < 241:
+                    size = 193 + ((x[upto] - 193) * 256) + x[upto+1]
+                    upto += 2
+                elif x[upto] < 255:
+                    size = 12481 + ((x[upto] - 241) * 65536) + (x[upto+1] * 256) + x[upto+2]
+                    upto += 3
+                else:
+                    print("warning invalid vle lead byte: " + str(x[upto]))
+                    return False 
+            elif 'size' in STLookup[typecode]:
+                size = STLookup[typecode]['size']
+            elif is_amount:
+                # work out size from context
+                if x[upto] >> 6 == 1:
+                    # xrp
+                    size = 8
+                else:
+                    # not xrp
+                    size = 48
+            else:
+                print("warning could not determine size of stobject")
+                return False
+                    
+
+            if is_amount and size == 8:
+                val = int(str(binascii.hexlify(x[upto:upto+size]), 'utf-8'), 16) - 0x4000000000000000
+                sto[fieldname] = {"currency": "xrp",  "value": val}
+                if print_out:
+                    print ("XRP " + str(val/1000000))
+            elif is_amount:
+
+                #print("RAW AMOUNT DATA: " + str(binascii.hexlify(x[upto:upto+384]), 'utf-8'))
+
+                curcode = str(x[upto+20:upto+23], 'utf-8')
+
+                amount = 0
+                if x[upto:upto+8] != b'\x80\x00\x00\x00\x00\x00\x00\x00':
+                    #do the amount math since it's not the special zero case
+                    # first 10 bits are flags and expontent, final 54 are mantissa
+                    mantissa = int(str(binascii.hexlify(x[upto+1:upto+8]), 'utf-8'), 16)
+                    # the two msb of mantissa are bleedover from exponent
+                    # probably should have assembled the value byte by byte instead of doing this
+                    if mantissa >= 0x8000000:
+                        mantissa -= 0x8000000
+                    if mantissa >= 0x4000000:
+                        mantissa -= 0x4000000
+
+                    exponent = int(str(binascii.hexlify(x[upto:upto+2]), 'utf-8'), 16)
+                    exponent >>= 6
+                    exponent &= 0xFF
+                   
+                    # as per spec we need to sub 97 from exponent now 
+                    exponent -= 97
+
+                    sign = (x[upto] >> 7) & 1     
+                
+                    amount = mantissa * 10 ** exponent
+                    
+
+                issuer = x[upto+28:upto+48]
+
+                sto[fieldname] = {"currency": curcode,  "value": amount, "issuer": issuer}
+                
+                if print_out:
+                    print (curcode + ": " + str(amount) + " [Issuer:" + str(binascii.hexlify(issuer), 'utf-8') + "]")
+
+            elif size <= 8:
+                val = int(str(binascii.hexlify(x[upto:upto+size]), 'utf-8'), 16)
+                sto[fieldname] = val
+                if print_out:
+                    if 'flags' in STLookup[typecode][fieldcode]['field_name'].lower():
+                        print( "{0:b}".format(val) )
+                    else:
+                        print(val)
+            else:
+                if print_out:
+                    print( str(binascii.hexlify(x[upto:upto+size]), 'utf-8'))
+                sto[fieldname] = x[upto:upto+size]
+
+            upto += size
+
+        return sto
+    except:
+        print("failed to parse stobject")
+        return False
+
+
+def CONNECT(server):           
+    print("Attempting to connect to " + server)
+    
+    parts = server.split(":")
+    port = 51235
+    if (len(parts) > 0):
+        port = int(parts[1], 10)
+    server = parts[0]
+
     #generate a node key
     sk = SigningKey.generate(curve=SECP256k1)
     vk = sk.get_verifying_key()
@@ -413,10 +472,13 @@ def CONNECT(server, port):
             for x in peer_ips:
                 x = x.replace('[::ffff:', '').replace(']', '')   
                 if re.match(r'^([0-9]{1,3}\.){3}[0-9]{1,3}:[0-9]{2,5}$', x):
-                    parts = x.split(":")
-                    port = int(parts[1], 10)
-                    server = parts[0]
-                    return CONNECT(server, port)
+                    if not x in peers:
+                        peers.add(x)
+                        f = open(peer_file, "a+")
+                        if f:
+                            f.write(x + "\n")
+                            f.close()                    
+                    return CONNECT(x)
   
         else:
             print("Failed to connected, received:")
@@ -454,45 +516,32 @@ def CONNECT(server, port):
 
 
 # request account state object from a recently closed ledger
-def REQUEST_AS(connection, binprefix, raccount = False):
+def REQUEST_LOOP():
 
-    if raccount != False and type(raccount) == str:
-        if raccount[0] == 'r':
-            raccount = serializer.decode_address(raccount)
-        else:
-            raccount = binascii.unhexlify(raccount)
-    
-    if type(binprefix) == str:
-        binprefix = binascii.unhexlify(binprefix)
-
-
-    requested_node = ''
-    if raccount != False:
-        requested_node = SHA512H(binprefix + raccount).hex() 
-    else:
-        requested_node = SHA512H(binprefix).hex() 
+    #todo: add select(), support multiple connections
+    connection = connections[0]
 
     # data may come in asynchronously
     # so we collect it all first and then compute at the end
-    state = {
-        "proven_correct": False, #indicates all the hashes have been checked up the tree
-        "requested_ledger_hash": False,
-        "calculated_ledger_hash": False,
-        "reported_account_root_hash": False,
-        "calculated_account_root_hash": False,
-        "account_depth": False,
-        "account_key": False,
-        "account_path_nodes": {} #these are the inner nodes that lead down to the account, including root, indexed by depth
-    }
+    request_state = {}
+    
+    def new_state():
+        return {
+            "proven_correct": False, #indicates all the hashes have been checked up the tree
+            "requested_ledger_hash": False,
+            "calculated_ledger_hash": False,
+            "reported_account_root_hash": False,
+            "calculated_account_root_hash": False,
+            "account_depth": False,
+            "account_key": False,
+            "account_path_nodes": {}, #these are the inner nodes that lead down to the account, including root, indexed by depth
+            "got_base_data" :  False,
+            "got_account_data" :  False
+        }
 
-    got_base_data = False
-    got_account_data = False
-
-
-    def check_if_done():
-        #return False
-
-        if got_base_data and got_account_data:
+    def check_if_done(state):
+        print("check if done on " + str(binascii.hexlify(state['requested_ledger_hash']), 'utf-8') + ' - ' + str(state['got_base_data']) + ", " + str(state['got_account_data'])) 
+        if state['got_base_data'] and state['got_account_data']:
             # check the hashes, if any don't match we'll return early with the default proven_correct value (False)
             if state["requested_ledger_hash"] != state["calculated_ledger_hash"]:
                 print("requested ledger doesn't match calculated ledger")
@@ -532,8 +581,13 @@ def REQUEST_AS(connection, binprefix, raccount = False):
         return False
 
 
-    def process_as_node(x, nodeid = False):
-        nonlocal got_account_data
+    def process_as_node(ledger_hash, x, nodeid = False):
+
+        if not ledger_hash in request_state:
+            print("2 we were sent a ledger base we didn't ask for " + binascii.hexlify(ledger_hash))
+            return
+
+        state = request_state[ledger_hash]
 
         nodetype = x.nodedata[-1]
         if hasattr(x, 'nodeid') and nodeid == False:
@@ -572,7 +626,7 @@ def REQUEST_AS(connection, binprefix, raccount = False):
             state["reported_account_hash"] = x.nodedata[-33:-1]
             print("FOUND: " + str(binascii.hexlify(state["reported_account_hash"]), 'utf-8'))
             parse_stobject(x.nodedata[:-33], True)
-            got_account_data = True
+            state['got_account_data'] = True
             
 
         elif nodetype != 2: # inner node, compressed, wire format
@@ -582,13 +636,11 @@ def REQUEST_AS(connection, binprefix, raccount = False):
         return nodehash 
 
     
-    last_requested_ledger = ""
-    
     partial_message = []
     partial_message_size = 0
     partial_message_upto = 0
 
-    sent_request = False
+    requested_ledgers = {}
 
     validations = {}
 
@@ -634,60 +686,87 @@ def REQUEST_AS(connection, binprefix, raccount = False):
         # these are the state xfer messages we're interested in
         if message_type == 32: #(mtLEDGER_DATA)
             print("mtLEDGER_DATA:")
+            msg_ledger_hash = message.ledgerHash
+
+            if not msg_ledger_hash in request_state:
+                print("1 we were sent a ledger base we didn't ask for " + binascii.hexlify(msg_legder_hash))
+                continue
+            state = request_state[msg_ledger_hash]
+
             if message.type == ripple_pb2.TMLedgerInfoType.liBASE:
                 print("liBASE received")
                 nodeid = 0
+
                 for x in message.nodes:
-                    #print("BASE NODE " + str(nodeid))
+                    print("BASE NODE " + str(nodeid))
+
+                    ledger_hash = x.nodedata[-42:-10] # NB: this could change? we should parse this properly
+
                     if nodeid == 0: #can calculate ledger hash from this node
                         state["calculated_ledger_hash"] = SHA512H(b'LWR\x00' + x.nodedata)
                         state["reported_account_root_hash"] = x.nodedata[-42:-10] # NB: this could change? we should parse this properly
-                        got_base_data = True
+                        state['got_base_data'] = True
                     elif nodeid == 1:
-                        state["calculated_account_root_hash"] = process_as_node(x, binascii.unhexlify('0' * 66))
+                        state["calculated_account_root_hash"] = process_as_node(msg_ledger_hash, x, binascii.unhexlify('0' * 66))
 
                     #print(binascii.hexlify(x.nodedata))
                     nodeid += 1
 
-                if check_if_done():
-                    return state
-
-                if got_account_data:
-                    print("could not find base data")
-                    return state
+                if check_if_done(state):
+                    print("request finished")
 
             elif message.type == ripple_pb2.TMLedgerInfoType.liTX_NODE:
                 for x in message.nodes:
                     print("TX NODEID: " + str(binascii.hexlify(x.nodeid)))
                     #print("NODEDATA: " + str(binascii.hexlify(x.nodedata)))
-                    if x.nodedata[-1] == 1:
-                        parse_stobject(x.nodedata[:-33], True)
+                    for y in parse_vlencoded(x.nodedata[:-33]):
+                        parse_stobject(y, True) 
+
 
             elif message.type == ripple_pb2.TMLedgerInfoType.liAS_NODE:
                 print("liAS_NODE")
                 for x in message.nodes:
-                    process_as_node(x)
+                    process_as_node(msg_ledger_hash, x)
 
-                if check_if_done():
-                    return state
-
-                if got_base_data:
-                    print("could not find requested object")
-                    return state
-                
+                if check_if_done(state):
+                    print("request finished")
 
         if message_type == 42: #GetObjectByHash
-            print('get object by hash: -------')
-            print(message)
-            print('-----------')
+            pass
+            #print('get object by hash: -------')
+            #print(message)
+            #print('-----------')
 
+        if message_type == 30: #Transaction
+            pass
+            #print('mtTransaction')
+            #parse_stobject(message.rawTransaction, True)
+
+        if message_type == 33: #(mtPROPOSE_LEDGER)
+            pass
+            #print('mtPROPOSE_LEDGER')
+            #print(message)        
+
+        if message_type == 15: #(mtEndpoints)
+            #print('mtEndpoints')
+            new_ips = set()
+            for endpoint in message.endpoints_v2:
+                ip = endpoint.endpoint.replace('[::', '').replace('ffff:', '').replace(']', '')
+                if re.match(r'^([0-9]{1,3}\.){3}[0-9]{1,3}:[0-9]{2,5}$', ip) != None:
+                    if not ip in peers:
+                        peers.add(ip)
+                        new_ips.add(ip)
+            f = open(peer_file, "a+")
+            if f:
+                for ip in new_ips:
+                    print("wrote " + ip)
+                    f.write(ip + "\n")
+                f.close()
+            #print(message)
+        
 
         if message_type == 41: #(mtVALIDATION)
             #todo check if validations are from our selected UNL
-
-            if sent_request:
-                continue        
-
 
             sto = parse_stobject(message.validation, False)#True)
 
@@ -703,26 +782,28 @@ def REQUEST_AS(connection, binprefix, raccount = False):
                 validations[ledger_hash][signing_key] = True
            
 
-            print("mtVALIDATION PK:" + str(binascii.hexlify(signing_key), 'utf-8') + " LH: " + str(binascii.hexlify(ledger_hash), 'utf-8'))
 
             #print(str(binascii.hexlify(message.validation), 'utf-8'))
 
             #print( "PK in UNL? " + str( (signing_key in UNL) ) )
 
-            state["requested_ledger_hash"] = message.validation[16:48] #todo pull this correctly from the object above
-
-            if len(validations[ledger_hash]) >= len(UNL) * 0.8:
-                # consensus on this ledger
-                print("Reached consensus on " + str(binascii.hexlify(ledger_hash), 'utf-8'))
-                sent_request = True 
-            else:
+            if len(validations[ledger_hash]) < len(UNL) * 0.8:
                 continue
+            
 
             # execution to here indicates the ledger is validated and we want to make our request now
-            time.sleep(1) #ensure everyone has the ledger on file
-            
-            ledger_seq = int(message.validation.hex()[12:20], 16) #todo change this to pull from sto
+            #time.sleep(4) #ensure everyone has the ledger on file
 
+            ledger_seq = sto['LedgerSequence'] # int(message.validation.hex()[12:20], 16) #todo change this to pull from sto
+            ledger_hash = sto['LedgerHash']
+
+        
+            if ledger_hash in requested_ledgers:
+                continue
+
+            print("mtVALIDATION ... " + str(len(validations[ledger_hash])) + "/" + str(len(UNL)) + " UNL peers have validated")
+            
+            print("requesting ledger " + str(ledger_seq) + " hash = " + str(binascii.hexlify(ledger_hash),'utf-8')) 
             # first request the base ledger info
             gl = ripple_pb2.TMGetLedger()
             gl.ledgerHash = ledger_hash
@@ -730,21 +811,33 @@ def REQUEST_AS(connection, binprefix, raccount = False):
             gl.queryDepth = 1
             gl.itype = ripple_pb2.TMLedgerInfoType.liBASE
             connection.send(ENCODE_MESSAGE('mtGetLedger', gl))
+            requested_ledgers[ledger_hash] = TIME()
+            
+            state = new_state()
+            request_state[ledger_hash] = state
+
+            state['requested_ledger_hash'] = ledger_hash    
+
 
             #liTX_NODE
            
             if False:
                 gl = ripple_pb2.TMGetLedger()
-                gl.ledgerHash = ledger_hash
-                gl.ledgerSeq = ledger_seq
+                gl.ledgerSeq = 51168607
                 gl.itype = ripple_pb2.TMLedgerInfoType.liTX_NODE
-           
+                req_tx = 'CD469FCF1D3B6ECE9F5130036C6C92359DC7EC92E6CFDBB7ED04345834822EFC'#EC9CAB34F9EFB1716E02B1D5DC60E0CD7EBBC379F859164248E505BB3688CF03'
+                
+                for l in range(1, len(req_tx)):
+                    v = hex(l)[2:]
+                    key = req_tx[0:l] + ('0' * (66 - l - len(v))) + v
+                    gl.nodeIDs.append(binascii.unhexlify(key))
+
                 #request the root account
-                gl.nodeIDs.append(binascii.unhexlify('0' * 66))
+                #gl.nodeIDs.append(binascii.unhexlify('0' * 66))
             
-                gl.queryDepth = 2
+                gl.queryDepth = 0
                 connection.send(ENCODE_MESSAGE('mtGetLedger', gl))
-                continue
+                #continue
  
             # now request the account state info
             gl = ripple_pb2.TMGetLedger()
@@ -760,7 +853,47 @@ def REQUEST_AS(connection, binprefix, raccount = False):
             gl.queryDepth = 0
             connection.send(ENCODE_MESSAGE('mtGetLedger', gl))
 
+            
+
     return state
+
+# process commandline
+if len(argv) == 0:
+    print("usage: " + sys.argv[0] + " rSomeAccountToWatch rSomeOtherAccountToWatch ...")
+    quit()
+
+binprefix = b'\x00a'
+if type(binprefix) == str: #leave this here in case we change the way binprefix is provided later
+    binprefix = binascii.unhexlify(binprefix)
+
+for raccount in argv:
+    acc = raccount
+    
+    if raccount != False and type(raccount) == str:
+        if raccount[0] == 'r':
+            raccount = serializer.decode_address(raccount)
+        else:
+            raccount = binascii.unhexlify(raccount)
+    
+    requested_node = ''
+    if raccount != False:
+        requested_node = SHA512H(binprefix + raccount).hex() 
+    else:
+        requested_node = SHA512H(binprefix).hex() 
+
+
+    accounts[acc] = { "node": requested_node }
+    if not os.path.exists(acc):
+        os.mkdir(acc)
+
+    if not os.path.exists(acc + '/tx'):
+        os.mkdir(acc + '/tx')
+
+    if not os.path.exists(acc + '/seq.txt'):
+        IntervalSet().save(acc + '/seq.txt')
+
+    accounts[acc]['seqset'] = IntervalSet(acc + '/seq.txt')
+
 
 # build UNL from the validator site specified, if any
 if type(validator_site) == str and len(validator_site) > 0:
@@ -780,17 +913,13 @@ if type(validator_site) == str and len(validator_site) > 0:
 
     print("Loaded a UNL from validator site " + validator_site + " consisting of " + str(len(UNL)) + " validators")
 
-connection = CONNECT(server, port)
 
-if connection == False:
-    print("could not connect!")
-    quit()
+while len(connections) < 1:
+    server = list(peers)[int(binascii.hexlify(os.urandom(4)), 16) % len(peers)]   
+    connection = CONNECT(server)
+    if connection:
+        connections.append(connection)
 
-data = REQUEST_AS(connection, b'\x00a', 'rToastMYRQh8boeo5Ys1CnPySmt3c9x3Y')
-
-if not data['proven_correct']:
-    print("Unable to verify data authenticity")
-else:
-    print("object verified")
+REQUEST_LOOP()
 
 exit() 
