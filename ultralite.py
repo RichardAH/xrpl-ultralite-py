@@ -14,7 +14,6 @@ from interval import IntervalSet
 from datetime import datetime
 from ecdsa import SigningKey, SECP256k1
 from base58r import base58r
-from serializer import serializer
 from socket import *
 from stlookup import *
 import base64
@@ -53,6 +52,21 @@ if os.path.exists(peer_file):
    
 peers.add(bootstrap_server)
 
+
+def DECODE_ADDRESS(address):
+    decoded = base58r.b58decode_check(address)
+    if decoded[0] == 0 and len(decoded) == 21: # is an address
+        return decoded[1:]
+    else:
+        raise ValueError("Not an AccountID!")
+
+def ENCODE_ADDRESS(b):
+    if type(b) == str:
+        b = binascii.unhexlify(b)
+    encoded = base58r.b58encode_check(b'\x00' + b)
+    return str(encoded, 'utf-8')
+
+
 def TIME():
     return int(datetime.timestamp(datetime.now()))
 
@@ -76,7 +90,7 @@ def SHA512H(b):
 
 #sha512 half with a prefix
 def SHA512HP(p, b):
-    return SHA512(b''.join([p, b]))
+    return SHA512(b''.join([p, b]))[0:32]
 
 #applies a byte by byte xor between two byte arrays
 def XOR(b1, b2):
@@ -263,6 +277,7 @@ def parse_vlencoded(x):
 def parse_stobject(x, print_out = False):
 
     try:
+        indentlvl = 0
         sto = {}
         upto = 0
         while upto < len(x):
@@ -290,11 +305,13 @@ def parse_stobject(x, print_out = False):
 
             if not typecode in STLookup or not fieldcode in STLookup[typecode]:
                 print("warning could not parse STObject, typecode = " + str(typecode) + ", fieldcode = " + str(fieldcode))
-                return False
+                upto +=1
+                continue
+                #return False
 
-            if print_out:
-                print(STLookup[typecode][fieldcode]['field_name'] + ": ", end='')
-
+            if print_out and not ( (typecode == 14 or typecode == 15) and fieldcode == 1 ):
+                print('\t'*indentlvl + STLookup[typecode][fieldcode]['field_name'] + ": ", end='')
+                
             fieldname = STLookup[typecode][fieldcode]['field_name']
 
             is_amount = STLookup[typecode]['type_name'].lower() == 'amount'
@@ -323,8 +340,22 @@ def parse_stobject(x, print_out = False):
                 else:
                     # not xrp
                     size = 48
+            elif typecode == 15: #array
+                indentlvl += 1
+                if fieldcode == 1:
+                    indentlvl -= 2
+                if print_out:
+                    print("")
+                continue 
+            elif typecode == 14: #object
+                indentlvl += 1
+                if fieldcode == 1:
+                    indentlvl -= 2
+                if print_out:
+                    print("")
+                continue
             else:
-                print("warning could not determine size of stobject")
+                print("warning could not determine size of stobject type=" + str(typecode) + " field=" + str(fieldcode))
                 return False
                     
 
@@ -343,15 +374,19 @@ def parse_stobject(x, print_out = False):
                 if x[upto:upto+8] != b'\x80\x00\x00\x00\x00\x00\x00\x00':
                     #do the amount math since it's not the special zero case
                     # first 10 bits are flags and expontent, final 54 are mantissa
-                    mantissa = int(str(binascii.hexlify(x[upto+1:upto+8]), 'utf-8'), 16)
-                    # the two msb of mantissa are bleedover from exponent
-                    # probably should have assembled the value byte by byte instead of doing this
-                    if mantissa >= 0x8000000:
-                        mantissa -= 0x8000000
-                    if mantissa >= 0x4000000:
-                        mantissa -= 0x4000000
+                    mantissa = 0
+                    mantissa += (x[upto+1]&0b111111) << 48
+                    mantissa += x[upto+2] << 40
+                    mantissa += x[upto+3] << 32
+                    mantissa += x[upto+4] << 24
+                    mantissa += x[upto+5] << 16
+                    mantissa += x[upto+6] << 8
+                    mantissa += x[upto+7]
 
-                    exponent = int(str(binascii.hexlify(x[upto:upto+2]), 'utf-8'), 16)
+# + x[upto+6]<<8 + x[upto+5]<<16 + x[upto+4]<<24 + x[upto+3]<<32 + x[upto+2]<<40 + ( x[upto+1] & 0b111111 ) <<48 
+                    exponent = 0
+                    exponent += x[upto] << 8
+                    exponent += x[upto+1]
                     exponent >>= 6
                     exponent &= 0xFF
                    
@@ -360,7 +395,7 @@ def parse_stobject(x, print_out = False):
 
                     sign = (x[upto] >> 7) & 1     
                 
-                    amount = mantissa * 10 ** exponent
+                    amount = mantissa * (10 ** exponent)
                     
 
                 issuer = x[upto+28:upto+48]
@@ -368,7 +403,7 @@ def parse_stobject(x, print_out = False):
                 sto[fieldname] = {"currency": curcode,  "value": amount, "issuer": issuer}
                 
                 if print_out:
-                    print (curcode + ": " + str(amount) + " [Issuer:" + str(binascii.hexlify(issuer), 'utf-8') + "]")
+                    print (curcode + ": " + str(amount) + " [Issuer:" + ENCODE_ADDRESS(issuer) + "]")
 
             elif size <= 8:
                 val = int(str(binascii.hexlify(x[upto:upto+size]), 'utf-8'), 16)
@@ -380,14 +415,18 @@ def parse_stobject(x, print_out = False):
                         print(val)
             else:
                 if print_out:
-                    print( str(binascii.hexlify(x[upto:upto+size]), 'utf-8'))
+                    if typecode == 8:
+                        print(ENCODE_ADDRESS(x[upto:upto+size]))
+                    else:
+                        print( str(binascii.hexlify(x[upto:upto+size]), 'utf-8'))
                 sto[fieldname] = x[upto:upto+size]
 
             upto += size
 
         return sto
-    except:
+    except Exception as e:
         print("failed to parse stobject")
+        print(e)
         return False
 
 
@@ -536,8 +575,8 @@ def REQUEST_LOOP():
         }
         print(accounts)
         for acc in accounts:
-            rn = accounts[acc]['requested_node']
-            ret['accounts'][rn] = { 
+            ret['accounts'][acc] = { 
+                "requested_node" : accounts[acc]['requested_node'],
                 "account_depth": False,
                 "account_key": False,
                 "account_path_nodes": {}, #these are the inner nodes that lead down to the account, including root, indexed by depth
@@ -545,7 +584,7 @@ def REQUEST_LOOP():
                 "acc_seq_no":  -1, #last account sequence number
                 "last_tx_ledger_seq_no": -1, #last ledger a transaction changed this account
                 "last_tx_id": '',
-                "proven_correct": False, #indicates all the hashes have been checked up the tree
+                "proven_correct": False #indicates all the hashes have been checked up the tree
             }
         return ret
 
@@ -606,6 +645,22 @@ def REQUEST_LOOP():
             print("all proven correct")
         return len(state['accounts']) == proven_correct_count
 
+    def decompress_node(nodedata):
+        if not nodedata[-1] == 3:
+            return nodedata
+
+        blank_branch = binascii.unhexlify('0' * 64)
+        reconstructed_node = b''
+        upto = 0
+        for branch in range(0, 16):
+            if upto + 32 < len(nodedata) and nodedata[upto + 32] == branch:
+                reconstructed_node += nodedata[upto:upto+32]
+                upto += 33
+            else:
+                reconstructed_node += blank_branch
+       
+        reconstructed_node += b'\x02'
+        return reconstructed_node
 
     def process_as_node(ledger_hash, x, nodeid = False):
 
@@ -621,57 +676,112 @@ def REQUEST_LOOP():
         depth = nodeid[-1]
         nodehash = False
         
-        for key in state['accounts']:
+        for acc in state['accounts']:
+            astate = state['accounts'][acc]
+            key = astate['requested_node']
             if not nodeid.hex()[:depth] == key[:depth]:
                 continue
-            astate = state['accounts'][key]
 
-        if nodetype == 3: # inner node, compressed wire format, decompress...
-            blank_branch = binascii.unhexlify('0' * 64)
-            reconstructed_node = b''
-            upto = 0
-            for branch in range(0, 16):
-                if upto + 32 < len(x.nodedata) and x.nodedata[upto + 32] == branch:
-                    reconstructed_node += x.nodedata[upto:upto+32]
-                    upto += 33
-                else:
-                    reconstructed_node += blank_branch
+            x.nodedata = decompress_node(x.nodedata)
+
+            #this is inefficient due to adding the account loop above, consider caching
+            #if nodetype == 3: # inner node, compressed wire format, decompress...
+            #    blank_branch = binascii.unhexlify('0' * 64)
+            #    reconstructed_node = b''
+            #    upto = 0
+            #    for branch in range(0, 16):
+            #        if upto + 32 < len(x.nodedata) and x.nodedata[upto + 32] == branch:
+            #            reconstructed_node += x.nodedata[upto:upto+32]
+            #            upto += 33
+            #        else:
+            #            reconstructed_node += blank_branch
+            #   
+            #    reconstructed_node += b'\x02'
+            #    x.nodedata = reconstructed_node
+            nodetype = x.nodedata[-1]
            
-            reconstructed_node += b'\x02'
-            x.nodedata = reconstructed_node
-            astate["account_path_nodes"][depth] = reconstructed_node
-            nodetype = 2
-       
-        # execution to here means it's either a leaf or uncompressed 
-        
-        nodehash = SHA512H(b'MIN\x00' + x.nodedata[:-1])
-        
+            # execution to here means it's either a leaf or uncompressed 
+            
+            nodehash = SHA512H(b'MIN\x00' + x.nodedata[:-1])
+            
 
-        astate["account_path_nodes"][depth] = x.nodedata
-        
-        print("AS KEY: " + nodeid.hex())
+            astate["account_path_nodes"][depth] = x.nodedata
+            
+            print("AS KEY: " + nodeid.hex())
 
-        if nodetype == 1: # leaf node, wire format
-            #this is our sought after account
-            nodehash = SHA512H(b'MLN\x00' + x.nodedata[:-1])
-            astate["account_key"] = nodeid
-            astate["account_depth"] = nodeid[-1]
-            astate["reported_account_hash"] = x.nodedata[-33:-1]
-            print("FOUND: " + str(binascii.hexlify(astate["reported_account_hash"]), 'utf-8'))
-            sto = parse_stobject(x.nodedata[:-33], True)
-            astate['got_account_data'] = True
-            astate['acc_seq_no'] = sto['Sequence']
-            astate['last_tx_id'] = sto['PreviousTxnID']
-            astate['last_tx_ledger_seq_no'] = sto['PreviousTxnLgrSeq']
+            if nodetype == 1: # leaf node, wire format
+                #this is our sought after account
+                nodehash = SHA512H(b'MLN\x00' + x.nodedata[:-1])
+                astate["account_key"] = nodeid
+                astate["account_depth"] = nodeid[-1]
+                astate["reported_account_hash"] = x.nodedata[-33:-1]
+                print("FOUND: " + str(binascii.hexlify(astate["reported_account_hash"]), 'utf-8'))
+                sto = parse_stobject(x.nodedata[:-33], True)
+                astate['got_account_data'] = True
+                astate['acc_seq_no'] = sto['Sequence']
+                astate['last_tx_id'] = sto['PreviousTxnID']
+                astate['last_tx_ledger_seq_no'] = sto['PreviousTxnLgrSeq']
 
-        elif nodetype != 2: # inner node, compressed, wire format
-            print("UNKNOWN NODE " + str(nodetype))
+            elif nodetype != 2: # inner node, compressed, wire format
+                print("UNKNOWN NODE " + str(nodetype))
 
         return nodehash 
 
-    def fetch_acc_txs(state):
-        pass    
+    def request_tx(ledger_seq_no, txid):
 
+        gl = ripple_pb2.TMGetLedger()
+        gl.ledgerSeq = ledger_seq_no
+        gl.ledgerHash = ledger_hash
+        gl.itype = ripple_pb2.TMLedgerInfoType.liTX_NODE
+        
+        if type(txid) == bytes:
+            txid = str(binascii.hexlify(txid), 'utf-8')
+
+        print("requesting txid: " + txid + " sq " + str(ledger_seq_no))
+
+        for l in range(1, int(len(txid)/8), 1):
+            v = hex(l)[2:]
+            key = txid[0:l] + ('0' * (66 - l - len(v))) + v
+            #print("requesting: " + key)
+            gl.nodeIDs.append(binascii.unhexlify(key))
+
+        gl.queryDepth = 0
+        connection.send(ENCODE_MESSAGE('mtGetLedger', gl))
+        #continue
+
+
+    #unfinished
+    def fetch_acc_txs(state):
+        for acc in state['accounts']:
+            print("fetch acc txs: " + acc)
+            astate = state['accounts'][acc]
+            account = accounts[acc]
+            processed_seq_nos = account['txseq']
+            if not processed_seq_nos.contains(astate['acc_seq_no']):
+                request_tx(astate['last_tx_ledger_seq_no'], astate['last_tx_id'])       
+
+            continue
+            #todo: place back-fetch on another thread/process
+
+            # find out if there is at least one missing old transaction in our tx history
+            if not processed_seq_nos.contains.last_missing() == False:
+                # there is, so we need to first crawl backwards through the tx we have until we 
+                # find this missing one
+                txid = astate['last_tx_id']
+                
+                while os.path.exists(acc + "/tx/" + txid):
+                    f = open(acc + "/tx/" + txid, "rb")
+                    if not f:
+                        break
+
+                    tx = f.read()
+                    f.close()
+
+                    tx = parse_stobject(tx, True)
+
+                
+
+            # todo: start a clock and request retry counter to attempt to fetch these tx before trying a history node
     
     partial_message = []
     partial_message_size = 0
@@ -682,6 +792,9 @@ def REQUEST_LOOP():
     validations = {}
 
     #message loop
+
+    recent_tx = ""
+    
     while True:
 
         #collect the raw packet from the connection
@@ -723,12 +836,15 @@ def REQUEST_LOOP():
         # these are the state xfer messages we're interested in
         if message_type == 32: #(mtLEDGER_DATA)
             print("mtLEDGER_DATA:")
-            msg_ledger_hash = message.ledgerHash
+            msg_ledger_hash = str(binascii.hexlify(message.ledgerHash), 'utf-8')
 
-            if not msg_ledger_hash in request_state:
-                print("1 we were sent a ledger base we didn't ask for " + binascii.hexlify(msg_legder_hash))
+            if not msg_ledger_hash in request_state and not message.type == ripple_pb2.TMLedgerInfoType.liTX_NODE:
+                print("1 we were sent a ledger base we didn't ask for " + binascii.hexlify(msg_ledger_hash))
                 continue
-            state = request_state[msg_ledger_hash]
+            
+            state = {}
+            if msg_ledger_hash in state:
+                state = request_state[msg_ledger_hash]
 
             if message.type == ripple_pb2.TMLedgerInfoType.liBASE:
                 print("liBASE received")
@@ -756,9 +872,31 @@ def REQUEST_LOOP():
             elif message.type == ripple_pb2.TMLedgerInfoType.liTX_NODE:
                 for x in message.nodes:
                     print("TX NODEID: " + str(binascii.hexlify(x.nodeid)))
-                    #print("NODEDATA: " + str(binascii.hexlify(x.nodedata)))
-                    for y in parse_vlencoded(x.nodedata[:-33]):
-                        parse_stobject(y, True) 
+                    if not x.nodedata[-1] == 4:
+                        continue
+    
+                    #x.nodedata = decompress_node(x.nodedata)
+                    print("NODEDATA: [len = " + str(len(x.nodedata)) + "]")#, TXID=" + str(binascii.hexlify(SHA512HP(b'TXN\x00', x.nodedata[4:-1])), 'utf-8'))
+                    h = str(binascii.hexlify(x.nodedata), 'utf-8')
+                    txid = h[-66:-2]
+                    print("TXID: " + txid)
+
+                    print("nodelen: " + str(len(x.nodedata)))
+                    vl = parse_vlencoded(x.nodedata[:-33])
+                    parse_stobject(vl[0], True)
+                    parse_stobject(vl[1], True)
+#                    #parse_stobject(x.nodedata[2:-33], True)
+
+                    
+                    #d = str(binascii.hexlify(x.nodedata))
+                    #print(d)
+                    #offset = 2
+                    #for i in range(0, 16):
+                    #    print("hash " + str(i) + ":" + d[i*64 + offset:(i+1)*64 + offset])
+
+                    
+                    #for y in parse_vlencoded(x.nodedata[:-33]):
+                    #    parse_stobject(y, True) 
 
 
             elif message.type == ripple_pb2.TMLedgerInfoType.liAS_NODE:
@@ -777,8 +915,9 @@ def REQUEST_LOOP():
             #print('-----------')
 
         if message_type == 30: #Transaction
-            pass
-            #print('mtTransaction')
+            if recent_tx == "":
+                recent_tx = SHA512HP(b'TXN\x00', message.rawTransaction)
+            #print('mtTransaction: ' + str(binascii.hexlify(SHA512HP(b'TXN\x00', message.rawTransaction)), 'utf-8'))
             #parse_stobject(message.rawTransaction, True)
 
         if message_type == 33: #(mtPROPOSE_LEDGER)
@@ -841,7 +980,18 @@ def REQUEST_LOOP():
                 continue
 
             print("mtVALIDATION ... " + str(len(validations[ledger_hash])) + "/" + str(len(UNL)) + " UNL peers have validated")
-            
+       
+            if recent_tx == "":
+                continue
+
+            request_tx(ledger_seq+1, recent_tx)
+            request_tx(ledger_seq, recent_tx)
+            request_tx(ledger_seq-1, recent_tx)
+            #request_tx(51656707,'a5630e722b80014df48a03983362fb219f7ef2c2259e7a50163de8e5b1801e10')
+
+            #request_tx(	51655998,'1456463B4C3C2C2E39EE9683C42494600BA3EA5DE048A4546E38273AB7EA3510')
+            continue
+    
             print("requesting ledger " + str(ledger_seq) + " hash = " + str(binascii.hexlify(ledger_hash),'utf-8')) 
             # first request the base ledger info
             gl = ripple_pb2.TMGetLedger()
@@ -856,27 +1006,6 @@ def REQUEST_LOOP():
             request_state[ledger_hash] = state
 
             state['requested_ledger_hash'] = ledger_hash    
-
-
-            #liTX_NODE
-           
-            if False:
-                gl = ripple_pb2.TMGetLedger()
-                gl.ledgerSeq = 51168607
-                gl.itype = ripple_pb2.TMLedgerInfoType.liTX_NODE
-                req_tx = 'CD469FCF1D3B6ECE9F5130036C6C92359DC7EC92E6CFDBB7ED04345834822EFC'#EC9CAB34F9EFB1716E02B1D5DC60E0CD7EBBC379F859164248E505BB3688CF03'
-                
-                for l in range(1, len(req_tx)):
-                    v = hex(l)[2:]
-                    key = req_tx[0:l] + ('0' * (66 - l - len(v))) + v
-                    gl.nodeIDs.append(binascii.unhexlify(key))
-
-                #request the root account
-                #gl.nodeIDs.append(binascii.unhexlify('0' * 66))
-            
-                gl.queryDepth = 0
-                connection.send(ENCODE_MESSAGE('mtGetLedger', gl))
-                #continue
 
             for acc in accounts:
                 requested_node = accounts[acc]['requested_node']
@@ -895,7 +1024,6 @@ def REQUEST_LOOP():
 
                 gl.queryDepth = 0
                 connection.send(ENCODE_MESSAGE('mtGetLedger', gl))
-
             
 
     return state
@@ -914,7 +1042,7 @@ for raccount in argv:
     
     if raccount != False and type(raccount) == str:
         if raccount[0] == 'r':
-            raccount = serializer.decode_address(raccount)
+            raccount = DECODE_ADDRESS(raccount)
         else:
             raccount = binascii.unhexlify(raccount)
     
@@ -932,10 +1060,10 @@ for raccount in argv:
     if not os.path.exists(acc + '/tx'):
         os.mkdir(acc + '/tx')
 
-    if not os.path.exists(acc + '/seq.txt'):
-        IntervalSet().save(acc + '/seq.txt')
+    if not os.path.exists(acc + '/txseq.txt'):
+        IntervalSet().save(acc + '/txseq.txt')
 
-    accounts[acc]['seqset'] = IntervalSet(acc + '/seq.txt')
+    accounts[acc]['txseq'] = IntervalSet(acc + '/txseq.txt')
 
 
 # build UNL from the validator site specified, if any

@@ -52,6 +52,9 @@ class IntervalSet:
         raise Exception('attempted to create an interval set with unknown parameter type: ' + str(type(l)))
 
     def add(self, x, y = None):
+        if type(x) != int or x < 0 or ( not y == None and ( type(y) != int or y < 0 ) ) :
+            raise Exception('intervalset must be supplied with positive integers')
+        
         sl = self.sl
         if x == None:
             raise Exception('attempted to add empty to integer set')
@@ -103,4 +106,13 @@ class IntervalSet:
 
         return False
 
-
+    #fetch the largest missing number that would go toward closing intervals
+    # false if intervals are closed
+    def last_missing(self):
+        if len(self.sl) == 0:
+            return False
+        if len(self.sl) == 1:
+            if self.sl[0][0] == 0:
+                return False
+            return self.sl[0][0]-1
+        return self.sl[len(self.sl)-1][0]-1
