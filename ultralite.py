@@ -53,20 +53,33 @@ if os.path.exists(peer_file):
    
 peers.add(bootstrap_server)
 
+def tohex(x):
+    if not type(x) == bytes:
+        raise Exception("cannot tohex() type " + str(type(x)))
+
+    return str(binascii.hexlify(x), 'utf-8')
+
+def fromhex(x):
+    if not type(x) == str:
+        raise Exception("cannot fromhex() type " + str(type(x)))
+
+    return binascii.unhexlify(x)
+
+
 def PPRINT(x):
     pp = pprint.PrettyPrinter(indent=4)
     pp.pprint(x)
 
-def DECODE_ADDRESS(address):
+def decode_xrpl_address(address):
     decoded = base58r.b58decode_check(address)
     if decoded[0] == 0 and len(decoded) == 21: # is an address
         return decoded[1:]
     else:
         raise ValueError("Not an AccountID!")
 
-def ENCODE_ADDRESS(b):
+def encode_xrpl_address(b):
     if type(b) == str:
-        b = binascii.unhexlify(b)
+        b = fromhex(b)
     encoded = base58r.b58encode_check(b'\x00' + b)
     return str(encoded, 'utf-8')
 
@@ -162,86 +175,90 @@ def MT_TO_NUM(x):
 #which must have been already stripped and fed in as mtype
 def PARSE_MESSAGE(mtype, msg):
     x = MT_TO_NUM(mtype)
-    if x == 1:
-        ret = ripple_pb2.TMHello()
-        ret.ParseFromString(msg)
-        return ret
-    if x == 2:
-        ret = ripple_pb2.TMManifests()
-        ret.ParseFromString(msg)
-        return ret
-    if x == 3:
-        ret = ripple_pb2.TMPing()
-        ret.ParseFromString(msg)
-        return ret
-    if x == 4:
-        ret = ripple_pb2.TMProofWork()
-        ret.ParseFromString(msg)
-        return ret
-    if x == 5:
-        ret = ripple_pb2.TMCluster()
-        ret.ParseFromString(msg)
-        return ret
-    if x == 12:
-        ret = ripple_pb2.TMGetPeers()
-        ret.ParseFromString(msg)
-        return ret
-    if x == 13:
-        ret = ripple_pb2.TMPeers()
-        ret.ParseFromString(msg)
-        return ret
-    if x == 15:
-        ret = ripple_pb2.TMEndpoints()
-        ret.ParseFromString(msg)
-        return ret
-    if x == 30:
-        ret = ripple_pb2.TMTransaction()
-        ret.ParseFromString(msg)
-        return ret
-    if x == 31:
-        ret = ripple_pb2.TMGetLedger()
-        ret.ParseFromString(msg)
-        return ret
-    if x == 32:
-        ret = ripple_pb2.TMLedgerData()
-        ret.ParseFromString(msg)
-        return ret
-    if x == 33:
-        ret = ripple_pb2.TMProposeSet()
-        ret.ParseFromString(msg)
-        return ret
-    if x == 34:
-        ret = ripple_pb2.TMStatusChange()
-        ret.ParseFromString(msg)
-        return ret
-    if x == 35:
-        ret = ripple_pb2.TMHaveTransactionSet()
-        ret.ParseFromString(msg)
-        return ret
-    if x == 41:
-        ret = ripple_pb2.TMValidation()
-        ret.ParseFromString(msg)
-        return ret
-    if x == 42:
-        ret = ripple_pb2.TMGetObjectByHash()
-        ret.ParseFromString(msg)
-        return ret
-    if x == 50:
-        ret = ripple_pb2.TMGetShardInfo()
-        ret.ParseFromString(msg)
-        return ret
-    if x == 51:
-        ret = ripple_pb2.TMShardInfo()
-        ret.ParseFromString(msg)
-        return ret
-    if x == 52:
-        ret = ripple_pb2.TMGetPeerShardInfo()
-        ret.ParseFromString(msg)
-        return ret
-    if x == 53:
-        ret = ripple_pb2.TMPeerShardInfo()
-        ret.ParseFromString(msg)
-        return ret
+    try:
+        if x == 1:
+            ret = ripple_pb2.TMHello()
+            ret.ParseFromString(msg)
+            return ret
+        if x == 2:
+            ret = ripple_pb2.TMManifests()
+            ret.ParseFromString(msg)
+            return ret
+        if x == 3:
+            ret = ripple_pb2.TMPing()
+            ret.ParseFromString(msg)
+            return ret
+        if x == 4:
+            ret = ripple_pb2.TMProofWork()
+            ret.ParseFromString(msg)
+            return ret
+        if x == 5:
+            ret = ripple_pb2.TMCluster()
+            ret.ParseFromString(msg)
+            return ret
+        if x == 12:
+            ret = ripple_pb2.TMGetPeers()
+            ret.ParseFromString(msg)
+            return ret
+        if x == 13:
+            ret = ripple_pb2.TMPeers()
+            ret.ParseFromString(msg)
+            return ret
+        if x == 15:
+            ret = ripple_pb2.TMEndpoints()
+            ret.ParseFromString(msg)
+            return ret
+        if x == 30:
+            ret = ripple_pb2.TMTransaction()
+            ret.ParseFromString(msg)
+            return ret
+        if x == 31:
+            ret = ripple_pb2.TMGetLedger()
+            ret.ParseFromString(msg)
+            return ret
+        if x == 32:
+            ret = ripple_pb2.TMLedgerData()
+            ret.ParseFromString(msg)
+            return ret
+        if x == 33:
+            ret = ripple_pb2.TMProposeSet()
+            ret.ParseFromString(msg)
+            return ret
+        if x == 34:
+            ret = ripple_pb2.TMStatusChange()
+            ret.ParseFromString(msg)
+            return ret
+        if x == 35:
+            ret = ripple_pb2.TMHaveTransactionSet()
+            ret.ParseFromString(msg)
+            return ret
+        if x == 41:
+            ret = ripple_pb2.TMValidation()
+            ret.ParseFromString(msg)
+            return ret
+        if x == 42:
+            ret = ripple_pb2.TMGetObjectByHash()
+            ret.ParseFromString(msg)
+            return ret
+        if x == 50:
+            ret = ripple_pb2.TMGetShardInfo()
+            ret.ParseFromString(msg)
+            return ret
+        if x == 51:
+            ret = ripple_pb2.TMShardInfo()
+            ret.ParseFromString(msg)
+            return ret
+        if x == 52:
+            ret = ripple_pb2.TMGetPeerShardInfo()
+            ret.ParseFromString(msg)
+            return ret
+        if x == 53:
+            ret = ripple_pb2.TMPeerShardInfo()
+            ret.ParseFromString(msg)
+            return ret
+    except:
+        print("warning could not parse message of type " + str(x))
+        return 0
     return 0
 
 #encode a message object for sending out over the connection
@@ -294,8 +311,32 @@ def parse_stobject(x, print_out = False):
         root_sto = {}
         sto = root_sto
         stack = []
+        inpath = False
         upto = 0
         while upto < len(x):
+            if inpath:
+                flags = x[upto]
+                upto += 1
+                #print("Flags: " + hex(flags))
+                if flags == 0xFF:
+                    continue
+                elif flags == 0x00:
+                    inpath = False
+                    continue
+
+                has_account     = not flags & 0x01 == 0
+                has_currency    = not flags & 0x10 == 0
+                has_issuer      = not flags & 0x20 == 0
+
+                if has_account:
+                    upto += 20 #todo: extract and store these values
+                if has_currency:
+                    upto += 20
+                if has_issuer:
+                    upto += 20
+
+                continue
+
             typecode = 0
             fieldcode = 0
         
@@ -332,6 +373,7 @@ def parse_stobject(x, print_out = False):
             is_amount = STLookup[typecode]['type_name'].lower() == 'amount'
 
             size = -1
+
             if STLookup[typecode][fieldcode]['vle']:
                 if x[upto] < 193:
                     size = x[upto]
@@ -344,7 +386,7 @@ def parse_stobject(x, print_out = False):
                     upto += 3
                 else:
                     print("warning invalid vle lead byte: " + str(x[upto]))
-                    return False 
+                    return False
             elif 'size' in STLookup[typecode]:
                 size = STLookup[typecode]['size']
             elif is_amount:
@@ -370,19 +412,23 @@ def parse_stobject(x, print_out = False):
                 if print_out:
                     print("")
                 continue
+            elif typecode == 18:
+                inpath = True
+                continue
+
             else:
                 print("warning could not determine size of stobject type=" + str(typecode) + " field=" + str(fieldcode))
                 return False
                     
 
             if is_amount and size == 8:
-                val = int(str(binascii.hexlify(x[upto:upto+size]), 'utf-8'), 16) - 0x4000000000000000
+                val = int(tohex(x[upto:upto+size]), 16) - 0x4000000000000000
                 add_entry(sto, fieldname, {"currency": "xrp",  "value": val})
                 if print_out:
                     print ("XRP " + str(val/1000000))
             elif is_amount:
 
-                #print("RAW AMOUNT DATA: " + str(binascii.hexlify(x[upto:upto+384]), 'utf-8'))
+                #print("RAW AMOUNT DATA: " + tohex(x[upto:upto+384]))
 
                 curcode = str(x[upto+20:upto+23], 'utf-8')
 
@@ -418,10 +464,14 @@ def parse_stobject(x, print_out = False):
                 add_entry(sto, fieldname, {"currency": curcode,  "value": amount, "issuer": issuer})
                 
                 if print_out:
-                    print (curcode + ": " + str(amount) + " [Issuer:" + ENCODE_ADDRESS(issuer) + "]")
+                    print (curcode + ": " + str(amount) + " [Issuer:" + encode_xrpl_address(issuer) + "]")
 
+            elif size == 0:
+                add_entry(sto, fieldname, None)
+                if print_out:
+                    print("<empty>")
             elif size <= 8:
-                val = int(str(binascii.hexlify(x[upto:upto+size]), 'utf-8'), 16)
+                val = int(tohex(x[upto:upto+size]), 16)
                 add_entry(sto, fieldname, val)
                 if print_out:
                     if 'flags' in STLookup[typecode][fieldcode]['field_name'].lower():
@@ -431,9 +481,9 @@ def parse_stobject(x, print_out = False):
             else:
                 if print_out:
                     if typecode == 8:
-                        print(ENCODE_ADDRESS(x[upto:upto+size]))
+                        print(encode_xrpl_address(x[upto:upto+size]))
                     else:
-                        print( str(binascii.hexlify(x[upto:upto+size]), 'utf-8'))
+                        print( tohex(x[upto:upto+size]))
 
                 add_entry(sto, fieldname, x[upto:upto+size])
 
@@ -443,7 +493,7 @@ def parse_stobject(x, print_out = False):
     except Exception as e:
         print("failed to parse stobject")
         print(e)
-        return False
+        return root_sto
 
 
 def CONNECT(server):           
@@ -579,7 +629,9 @@ def REQUEST_LOOP():
     # data may come in asynchronously
     # so we collect it all first and then compute at the end
     request_state = {}
-    
+   
+    last_ledger_seq_no = -1
+ 
     def new_state():
         ret = {
             "requested_ledger_hash": False,
@@ -592,7 +644,7 @@ def REQUEST_LOOP():
         print(accounts)
         for acc in accounts:
             ret['accounts'][acc] = { 
-                "requested_node" : accounts[acc]['requested_node'],
+                "asroot_key" : accounts[acc]['asroot_key'],
                 "account_depth": False,
                 "account_key": False,
                 "account_path_nodes": {}, #these are the inner nodes that lead down to the account, including root, indexed by depth
@@ -639,7 +691,7 @@ def REQUEST_LOOP():
             def node_contains(node, findhash):
                 for n in range(0, 512, 32):
                     if node[n:n+32] == findhash:
-                        #print("Found " + str(binascii.hexlify(findhash),'utf-8') + " at branch " + str(n/32))
+                        #print("Found " + tohex(findhash) + " at branch " + str(n/32))
                         return True
                 return False      
 
@@ -651,7 +703,7 @@ def REQUEST_LOOP():
                 else:
                     computed_hash = SHA512H(b'MIN\x00' + astate['account_path_nodes'][i][:-1])
                 if not node_contains(astate['account_path_nodes'][i-1], computed_hash):
-                    print("inner node at depth " + str(i) + " computed hash " + str(binascii.hexlify(computed_hash), 'utf-8') + " wasn't found in the node above")
+                    print("inner node at depth " + str(i) + " computed hash " + tohex(computed_hash) + " wasn't found in the node above")
                     return True
 
             astate["proven_correct"] = True 
@@ -665,7 +717,7 @@ def REQUEST_LOOP():
         if not nodedata[-1] == 3:
             return nodedata
 
-        blank_branch = binascii.unhexlify('0' * 64)
+        blank_branch = fromhex('0' * 64)
         reconstructed_node = b''
         upto = 0
         for branch in range(0, 16):
@@ -681,7 +733,7 @@ def REQUEST_LOOP():
     def process_as_node(ledger_hash, x, nodeid = False):
 
         if not ledger_hash in request_state:
-            print("2 we were sent a ledger base we didn't ask for " + binascii.hexlify(ledger_hash))
+            print("2 we were sent a ledger base we didn't ask for " + tohex(ledger_hash))
             return
 
         state = request_state[ledger_hash]
@@ -694,7 +746,7 @@ def REQUEST_LOOP():
         
         for acc in state['accounts']:
             astate = state['accounts'][acc]
-            key = astate['requested_node']
+            key = astate['asroot_key']
             if not nodeid.hex()[:depth] == key[:depth]:
                 continue
 
@@ -702,7 +754,7 @@ def REQUEST_LOOP():
 
             #this is inefficient due to adding the account loop above, consider caching
             #if nodetype == 3: # inner node, compressed wire format, decompress...
-            #    blank_branch = binascii.unhexlify('0' * 64)
+            #    blank_branch = fromhex('0' * 64)
             #    reconstructed_node = b''
             #    upto = 0
             #    for branch in range(0, 16):
@@ -731,7 +783,7 @@ def REQUEST_LOOP():
                 astate["account_key"] = nodeid
                 astate["account_depth"] = nodeid[-1]
                 astate["reported_account_hash"] = x.nodedata[-33:-1]
-                print("FOUND: " + str(binascii.hexlify(astate["reported_account_hash"]), 'utf-8'))
+                print("FOUND: " + tohex(astate["reported_account_hash"]))
                 sto = parse_stobject(x.nodedata[:-33], True)
                 astate['got_account_data'] = True
                 astate['acc_seq_no'] = sto['Sequence']
@@ -744,27 +796,39 @@ def REQUEST_LOOP():
         return nodehash 
 
     def request_tx(ledger_seq_no, txid):
+        return request_tx_batch([(ledger_seq_no, ledger_seq_no + 5, txid)])
 
-        gl = ripple_pb2.TMGetLedger()
-        gl.ledgerSeq = ledger_seq_no
-        gl.ledgerHash = ledger_hash
-        gl.itype = ripple_pb2.TMLedgerInfoType.liTX_NODE
-        
-        if type(txid) == bytes:
-            txid = str(binascii.hexlify(txid), 'utf-8')
+    def request_tx_batch(tuples):
+        nonlocal last_ledger_seq_no
+        seq_tx_map = {}
 
-        print("requesting txid: " + txid + " sq " + str(ledger_seq_no))
+        for t in tuples:
+            for n in range(t[0], t[1]+1):
+                if not n in seq_tx_map:
+                    seq_tx_map[n] = []
+                seq_tx_map[n].append(t[2])       
 
-        for l in range(1, int(len(txid)/8), 1):
-            v = hex(l)[2:]
-            key = txid[0:l] + ('0' * (66 - l - len(v))) + v
-            #print("requesting: " + key)
-            gl.nodeIDs.append(binascii.unhexlify(key))
+        for ledger_seq_no in seq_tx_map:
+            if ledger_seq_no > last_ledger_seq_no:
+                continue
 
-        gl.queryDepth = 0
-        connection.send(ENCODE_MESSAGE('mtGetLedger', gl))
-        #continue
+            gl = ripple_pb2.TMGetLedger()
+            gl.ledgerSeq = ledger_seq_no
+            gl.itype = ripple_pb2.TMLedgerInfoType.liTX_NODE
+            
+            for txid in seq_tx_map[ledger_seq_no]:
 
+                if type(txid) == bytes:
+                    txid = tohex(txid)
+
+                #print("requesting " + txid + " from ledger " + str(ledger_seq_no))
+                for l in range(1, 8, 1):
+                    v = hex(l)[2:]
+                    key = txid[0:l] + ('0' * (66 - l - len(v))) + v
+                    gl.nodeIDs.append(fromhex(key))
+
+                gl.queryDepth = 0
+                connection.send(ENCODE_MESSAGE('mtGetLedger', gl))
 
     #unfinished
     def fetch_acc_txs(state):
@@ -814,7 +878,7 @@ def REQUEST_LOOP():
 
         #collect the raw packet from the connection
         raw_packet = connection.recv(0xffff)
-
+        
         if partial_message_size > 0:
             partial_message_upto += len(raw_packet)
             partial_message.append(raw_packet)
@@ -850,11 +914,11 @@ def REQUEST_LOOP():
 
         # these are the state xfer messages we're interested in
         if message_type == 32: #(mtLEDGER_DATA)
-            print("mtLEDGER_DATA:")
-            msg_ledger_hash = str(binascii.hexlify(message.ledgerHash), 'utf-8')
+            #print("mtLEDGER_DATA:")
+            msg_ledger_hash = tohex(message.ledgerHash)
 
             if not msg_ledger_hash in request_state and not message.type == ripple_pb2.TMLedgerInfoType.liTX_NODE:
-                print("1 we were sent a ledger base we didn't ask for " + binascii.hexlify(msg_ledger_hash))
+                print("1 we were sent a ledger base we didn't ask for " + tohex(msg_ledger_hash))
                 continue
             
             state = {}
@@ -875,9 +939,9 @@ def REQUEST_LOOP():
                         state["reported_account_root_hash"] = x.nodedata[-42:-10] # NB: this could change? we should parse this properly
                         state['got_base_data'] = True
                     elif nodeid == 1:
-                        state["calculated_account_root_hash"] = process_as_node(msg_ledger_hash, x, binascii.unhexlify('0' * 66))
+                        state["calculated_account_root_hash"] = process_as_node(msg_ledger_hash, x, fromhex('0' * 66))
 
-                    #print(binascii.hexlify(x.nodedata))
+                    #print(tohex(x.nodedata))
                     nodeid += 1
 
                 if verify_as_nodes(state):
@@ -885,27 +949,34 @@ def REQUEST_LOOP():
                     fetch_acc_txs(state)
 
             elif message.type == ripple_pb2.TMLedgerInfoType.liTX_NODE:
+                #print("MTLEDGER NODE COUNT = " + str(len(message.nodes)))
                 for x in message.nodes:
-                    print("TX NODEID: " + str(binascii.hexlify(x.nodeid)))
+                    #print("TX NODEID: " + tohex(x.nodeid))
                     if not x.nodedata[-1] == 4:
                         continue
     
                     #x.nodedata = decompress_node(x.nodedata)
-                    print("NODEDATA: [len = " + str(len(x.nodedata)) + "]")#, TXID=" + str(binascii.hexlify(SHA512HP(b'TXN\x00', x.nodedata[4:-1])), 'utf-8'))
-                    h = str(binascii.hexlify(x.nodedata), 'utf-8')
-                    txid = h[-66:-2]
-                    print("TXID: " + txid)
+                    h = tohex(x.nodedata)
+                    txid = fromhex(h[-66:-2])
+                    #print("TXID: " + tohex(txid))
 
-                    print("nodelen: " + str(len(x.nodedata)))
-                    vl = parse_vlencoded(x.nodedata[:-33])
-                    print("tx proper:")
-                    parse_stobject(vl[0], True)
-                    print("meta:")
-                    parse_stobject(vl[1], True)
+                    for acc in accounts:
+                        if txid in accounts[acc]['wanted_tx']:
+                            #print(message)
+                            print("REMOVED :" + tohex(txid) + " FOUND IN LEDGER " + str(message.ledgerSeq) + " ORIGINAL ESTIMATE:" + str(accounts[acc]['wanted_tx'][txid]['ledger_seq_no_at_discovery'] ))
+                            del accounts[acc]['wanted_tx'][txid]
+
+                    #print("nodelen: " + str(len(x.nodedata)))
+             #       vl = parse_vlencoded(x.nodedata[:-33])
+                    #print("tx proper:")
+             #       tx = parse_stobject(vl[0], False)
+                    #print("meta:")
+             #       md = parse_stobject(vl[1], False)
+
 #                    #parse_stobject(x.nodedata[2:-33], True)
 
                     
-                    #d = str(binascii.hexlify(x.nodedata))
+                    #d = tohex(x.nodedata)
                     #print(d)
                     #offset = 2
                     #for i in range(0, 16):
@@ -932,11 +1003,26 @@ def REQUEST_LOOP():
             #print('-----------')
 
         if message_type == 30: #Transaction
+            #wait for at least one validation before we start wanting tx
+            if last_ledger_seq_no == -1:
+                continue
+
             if recent_tx == "":
                 recent_tx = SHA512HP(b'TXN\x00', message.rawTransaction)
-            #print('mtTransaction: ' + str(binascii.hexlify(SHA512HP(b'TXN\x00', message.rawTransaction)), 'utf-8'))
-            #parse_stobject(message.rawTransaction, True)
-
+            #print('mtTransaction: ' + tohex(SHA512HP(b'TXN\x00', message.rawTransaction))
+            tx = parse_stobject(message.rawTransaction, False)
+            
+            if tx:
+                txid = SHA512HP(b'TXN\x00', message.rawTransaction)
+                
+                for acc in accounts:
+                    if accounts[acc]['raw'] == tx['Account']:
+                        accounts[acc]['wanted_tx'][txid] = {
+                            "acc_seq_no": tx['Sequence'],
+                            "ledger_seq_no_at_discovery": last_ledger_seq_no,
+                            "max_ledger_seq_no": tx['LastLedgerSequence']
+                        }
+                        print('TX: ' + encode_xrpl_address(tx['Account']) + "["+str(len(accounts[acc]['wanted_tx']))+"]" + ", " + str(tx['Sequence']) + " {" + str(last_ledger_seq_no) + "}  " + tohex(txid))
         if message_type == 33: #(mtPROPOSE_LEDGER)
             pass
             #print('mtPROPOSE_LEDGER')
@@ -954,7 +1040,7 @@ def REQUEST_LOOP():
             f = open(peer_file, "a+")
             if f:
                 for ip in new_ips:
-                    print("wrote " + ip)
+                    #print("wrote " + ip)
                     f.write(ip + "\n")
                 f.close()
             #print(message)
@@ -978,7 +1064,7 @@ def REQUEST_LOOP():
            
 
 
-            #print(str(binascii.hexlify(message.validation), 'utf-8'))
+            #print(tohex(message.validation))
 
             #print( "PK in UNL? " + str( (signing_key in UNL) ) )
 
@@ -992,6 +1078,10 @@ def REQUEST_LOOP():
             ledger_seq = sto['LedgerSequence'] # int(message.validation.hex()[12:20], 16) #todo change this to pull from sto
             ledger_hash = sto['LedgerHash']
 
+            if last_ledger_seq_no == ledger_seq:
+                continue
+
+            last_ledger_seq_no = ledger_seq
         
             if ledger_hash in requested_ledgers:
                 continue
@@ -1001,15 +1091,36 @@ def REQUEST_LOOP():
             if recent_tx == "":
                 continue
 
-            request_tx(ledger_seq+1, recent_tx)
-            request_tx(ledger_seq, recent_tx)
-            request_tx(ledger_seq-1, recent_tx)
+            tx_set = []
+            tx_drop = []
+            for acc in accounts:
+                for txid in accounts[acc]['wanted_tx']:
+                    if accounts[acc]['wanted_tx'][txid]['ledger_seq_no_at_discovery'] <= 0:
+                        accounts[acc]['wanted_tx'][txid]['ledger_seq_no_at_discovery'] = ledger_seq - 1
+
+                    maxseq = accounts[acc]['wanted_tx'][txid]['max_ledger_seq_no']
+                    minseq = accounts[acc]['wanted_tx'][txid]['ledger_seq_no_at_discovery']
+                    if maxseq < last_ledger_seq_no and maxseq + 5 > last_ledger_seq_no :
+                        tx_set.append( (minseq, maxseq, txid) )
+                    elif maxseq + 7 < last_ledger_seq_no:
+                        tx_drop.append(txid)       
+    
+            for txid in tx_drop:
+                for acc in accounts:
+                    print("DROPPED " + tohex(txid) + " ledger_added: " + str(accounts[acc]['wanted_tx'][txid]['ledger_seq_no_at_discovery']) + " max: " + str(accounts[acc]['wanted_tx'][txid]['max_ledger_seq_no']))
+                    del accounts[acc]['wanted_tx'][txid]
+
+            request_tx_batch(tx_set)
+
+            #request_tx(ledger_seq+1, recent_tx)
+            #request_tx(ledger_seq, recent_tx)
+            #request_tx(ledger_seq-1, recent_tx)
             #request_tx(51656707,'a5630e722b80014df48a03983362fb219f7ef2c2259e7a50163de8e5b1801e10')
 
             #request_tx(	51655998,'1456463B4C3C2C2E39EE9683C42494600BA3EA5DE048A4546E38273AB7EA3510')
             continue
     
-            print("requesting ledger " + str(ledger_seq) + " hash = " + str(binascii.hexlify(ledger_hash),'utf-8')) 
+            print("requesting ledger " + str(ledger_seq) + " hash = " + tohex(ledger_hash)) 
             # first request the base ledger info
             gl = ripple_pb2.TMGetLedger()
             gl.ledgerHash = ledger_hash
@@ -1025,7 +1136,7 @@ def REQUEST_LOOP():
             state['requested_ledger_hash'] = ledger_hash    
 
             for acc in accounts:
-                requested_node = accounts[acc]['requested_node']
+                requested_node = accounts[acc]['asroot_key']
 
                 print('requesting node: ' + requested_node)
                 # now request the account state info
@@ -1037,7 +1148,7 @@ def REQUEST_LOOP():
                 for l in range(1, len(requested_node)):
                     v = hex(l)[2:]
                     key = requested_node[0:l] + ('0' * (66 - l - len(v))) + v
-                    gl.nodeIDs.append(binascii.unhexlify(key))
+                    gl.nodeIDs.append(fromhex(key))
 
                 gl.queryDepth = 0
                 connection.send(ENCODE_MESSAGE('mtGetLedger', gl))
@@ -1052,25 +1163,29 @@ if len(argv) == 0:
 
 binprefix = b'\x00a'
 if type(binprefix) == str: #leave this here in case we change the way binprefix is provided later
-    binprefix = binascii.unhexlify(binprefix)
+    binprefix = fromhex(binprefix)
 
 for raccount in argv:
     acc = raccount
     
     if raccount != False and type(raccount) == str:
         if raccount[0] == 'r':
-            raccount = DECODE_ADDRESS(raccount)
+            raccount = decode_xrpl_address(raccount)
         else:
-            raccount = binascii.unhexlify(raccount)
+            raccount = fromhex(raccount)
     
-    requested_node = ''
+    asroot_key = ''
     if raccount != False:
-        requested_node = SHA512H(binprefix + raccount).hex() 
+        asroot_key = SHA512H(binprefix + raccount).hex() 
     else:
-        requested_node = SHA512H(binprefix).hex() 
+        asroot_key = SHA512H(binprefix).hex() 
 
 
-    accounts[acc] = { "requested_node": requested_node }
+    accounts[acc] = {
+        "raw": raccount, 
+        "asroot_key": asroot_key, #asroot
+        "wanted_tx": {} # txid->seqno
+    }
     if not os.path.exists(acc):
         os.mkdir(acc)
 
@@ -1103,7 +1218,7 @@ if type(validator_site) == str and len(validator_site) > 0:
 
 
 while len(connections) < 1:
-    server = list(peers)[int(binascii.hexlify(os.urandom(4)), 16) % len(peers)]   
+    server = list(peers)[int(tohex(os.urandom(4)), 16) % len(peers)]   
     connection = CONNECT(server)
     if connection:
         connections.append(connection)
