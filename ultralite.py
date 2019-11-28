@@ -10,7 +10,7 @@ UNL = [] #we'll populate from the below if specified
 validator_site = "https://vl.ripple.com"
 peer_file = "peers.txt"
 
-PEER_CON_LIMIT = 3
+PEER_CON_LIMIT = 2
 
 import traceback
 from interval import IntervalSet
@@ -1108,7 +1108,6 @@ def REQUEST_LOOP():
 
             #check for pings and respond with a pong
             if message_type == 3: #(mtPING)
-                print("mtPING")
                 message.type = message.ptPONG
                 try: 
                     connection.send(ENCODE_MESSAGE('mtPing', message)) 
