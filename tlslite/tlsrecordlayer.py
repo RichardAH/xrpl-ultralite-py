@@ -604,7 +604,8 @@ class TLSRecordLayer(object):
     	
     def fileno(self):
         """Not implement in TLS Lite."""
-        raise NotImplementedError()
+        return self.sock.fileno()
+        #raise NotImplementedError()
     	
 
      #*********************************************************

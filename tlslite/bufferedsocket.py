@@ -90,3 +90,7 @@ class BufferedSocket(object):
         """Close the underlying socket."""
         self.flush()
         return self.socket.close()
+
+    def fileno(self):
+        return self.socket.fileno()
+        
