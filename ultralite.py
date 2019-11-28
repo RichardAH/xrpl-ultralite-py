@@ -10,6 +10,9 @@ UNL = [] #we'll populate from the below if specified
 validator_site = "https://vl.ripple.com"
 peer_file = "peers.txt"
 
+PEER_CON_LIMIT = 3
+
+import traceback
 from interval import IntervalSet
 from datetime import datetime
 from ecdsa import SigningKey, SECP256k1
@@ -496,9 +499,25 @@ def parse_stobject(x, print_out = False):
         print(e)
         return root_sto
 
+#generate a node key
+node_sk = SigningKey.generate(curve=SECP256k1)
+node_vk = node_sk.get_verifying_key()
+#node key must be in compressed form (x-coord only) and start with magic type 0x1C
+order = ecdsa.SECP256k1.generator.order()
+point = node_vk.pubkey.point
+x = (b'\x1c\x02', b'\x1c\x03')[point.y() & 1] + ecdsa.util.number_to_string(point.x(), order)
+y = SHA256CHK(x) #checksum bytes
+x += y
+#encode node key into standard base58 notation using the ripple alphabet
+node_b58pk = base58r.b58encode(x).decode('utf-8')
 
-def CONNECT(server):           
-    print("Attempting to connect to " + server)
+x = None
+y = None
+
+def CONNECT(server):
+    server = server.replace("\r", "")       
+    server = server.replace("\n", "")       
+    print("Attempting to connect to " + server + ", connections=" + str(len(connections)) )
     
     parts = server.split(":")
     port = 51235
@@ -506,27 +525,17 @@ def CONNECT(server):
         port = int(parts[1], 10)
     server = parts[0]
 
-    #generate a node key
-    sk = SigningKey.generate(curve=SECP256k1)
-    vk = sk.get_verifying_key()
-
-    #node key must be in compressed form (x-coord only) and start with magic type 0x1C
-    order = ecdsa.SECP256k1.generator.order()
-    point = vk.pubkey.point
-    x = (b'\x1c\x02', b'\x1c\x03')[point.y() & 1] + ecdsa.util.number_to_string(point.x(), order)
-    y = SHA256CHK(x) #checksum bytes
-    x += y
-
-    #encode node key into standard base58 notation using the ripple alphabet
-    b58pk = base58r.b58encode(x).decode('utf-8')
 
     #open the socket
     sock = socket(AF_INET, SOCK_STREAM)
-    sock.settimeout(2.0)
     try:
-        sock.connect( (server, port) )
-    except:
+        sock.settimeout(1.0)
+        sock.connect( (server, port))
+    except Exception as e:
+        #traceback.print_exception(e) 
         return False
+
+    
 
     #attach the tls class  /  this tls lib has been modified to expose the finished messages for use in the rippled cookie
     connection = tlslite.TLSConnection(sock)
@@ -538,7 +547,7 @@ def CONNECT(server):
     cookie = SHA512H(XOR(cookie1, cookie2))
 
     #the cookie must be signed with our private key
-    sig = base64.b64encode(sk.sign_digest(cookie, sigencode=ecdsa.util.sigencode_der)).decode('utf-8')
+    sig = base64.b64encode(node_sk.sign_digest(cookie, sigencode=ecdsa.util.sigencode_der)).decode('utf-8')
 
     #finally construct the GET request which will allow us to say hello to the rippled server
     request =  'GET / HTTP/1.1\r\n'
@@ -548,13 +557,18 @@ def CONNECT(server):
     request += 'Connect-As: Peer\r\n'
     request += 'Crawl: private\r\n'
     request += 'Session-Signature: '+sig+'\r\n'
-    request += 'Public-Key: '+b58pk+'\r\n\r\n'
+    request += 'Public-Key: '+node_b58pk+'\r\n\r\n'
 
     #send the request
     connection.send(bytes(request, 'utf-8'))
+    return connection
 
+def FINISH_CONNECTING(connection,  packet):
     #the first packet will still be http
-    packet = connection.recv(1024).decode('utf-8')
+    #packet = connection.recv(1024).decode('utf-8')
+
+    if (type(packet) == bytes):
+        packet = packet.decode('utf-8')
 
     #we should get back the 'switching protocols' packet
     if not "Switching Protocols" in packet:
@@ -594,7 +608,7 @@ def CONNECT(server):
             print("Failed to connected, received:")
             print(packet)
        
-     
+        print("failed") 
         return False
 
     #there's some interesting info in this header
@@ -816,7 +830,7 @@ def REQUEST_LOOP():
             
             lentosend = len(seq_tx_map[ledger_seq_no])
 
-            packets = lentosend//20 + 1
+            packets = lentosend//40 + 1
 
             for p in range(0, packets):
                 appended = 0
@@ -850,10 +864,16 @@ def REQUEST_LOOP():
                 if appended > 0:
                     print("sending tx req batch p=" + str(p) + " count=" + str(count) + " contains=" + str(appended))
                     gl.queryDepth = 0
-                    con = send_rand_peer(ENCODE_MESSAGE('mtGetLedger', gl))
+                    msg = ENCODE_MESSAGE('mtGetLedger', gl)
+                    con = send_rand_peer(msg)
                     if con and connections[con]:
                         connections[con]['requests'] += 1
 
+                    #send to a second random peer to increase chance of response
+                    if len(connections) > 1:
+                        con = send_rand_peer(msg, [con])
+                        if con and connections[con]:
+                            connections[con]['requests'] += 1
 
     #unfinished
     def fetch_acc_txs(state):
@@ -897,11 +917,13 @@ def REQUEST_LOOP():
             print("send to connection fd=" + str(connection.fileno()) + " failed, removing connection")
             return False        
 
-    def send_rand_peer(x):
-        live_count = 0
+    def send_rand_peer(x, exclude = []):
         sent = False
-        while len(connections) > 0 and not sent: 
-            sent = send([*connections][int(tohex(os.urandom(4)), 16) % len(connections)], x)
+        while len(connections) > len(exclude) and not sent:
+            peer = [*connections][int(tohex(os.urandom(4)), 16) % len(connections)]
+            if peer in exclude:
+                continue
+            sent = send(peer, x)
         return sent
 
 
@@ -919,10 +941,10 @@ def REQUEST_LOOP():
                     minseq += 1
                     maxseq = minseq + 1 
                 #if maxseq < last_ledger_seq_no and maxseq + 5 > last_ledger_seq_no :
-                if maxseq + 7 < last_ledger_seq_no:
+                if maxseq + 20 < last_ledger_seq_no:
                     tx_drop.append(txid)       
                 elif minseq <= last_ledger_seq_no :
-                    tx_set.append( (minseq, maxseq, txid, accounts[acc]['wanted_tx'][txid]['aggression']) )
+                    tx_set.append( (minseq, maxseq, txid, 12 ) ) #accounts[acc]['wanted_tx'][txid]['aggression']) )
                     
                     if last_ledger_seq_no - accounts[acc]['wanted_tx'][txid]['ledger_seq_no_at_discovery'] > 2:
                         accounts[acc]['wanted_tx'][txid]['aggression'] += 1
@@ -948,41 +970,50 @@ def REQUEST_LOOP():
     #message loop
 
     def make_random_connection():
-        attempts = 0
-        while attempts < 20:
-            attempts += 1
-            server = list(peers)[int(tohex(os.urandom(4)), 16) % len(peers)]   
-            try:
-                connection = CONNECT(server)
-                if connection:
-                    connections[connection] = {
-                        'requests': 0,
-                        'responses': 0
-                    }
-                    return True    
-            except:
-                continue 
+        server = [*peers][int(tohex(os.urandom(4)), 16) % len(peers)]   
+        try:
+            connection = CONNECT(server)
+            if connection:
+                connections[connection] = {
+                    'requests': 0,
+                    'responses': 0,
+                    'finished_connecting': False
+                }
+                return True    
+            else:
+                print("connection failed")
+        except Exception as e:
+            print("987")
+            print(e)
+            pass
         return False
 
 
+    def before_continue():
+        if len(connections) < PEER_CON_LIMIT:
+            make_random_connection()
+        elif len(connections) == PEER_CON_LIMIT:
+            prune = []
+            for con in connections:
+                if not con:
+                    prune.append(con)
+                    continue
+                if connections[con]['requests'] > 30:
+                    health = connections[con]['responses'] / connections[con]['requests']
+                    if health < 0.5:
+                        print("fd " + str(con.fileno()) + " health = " + str(connections[con]['responses'] / connections[con]['requests']) + " req: " + str(connections[con]['requests']) + " resp: " + str(connections[con]['responses'])  )
+                        del connections[con]
+                        break
+            #catch anything that shouldn't be in there
+            for x in prune:
+                del connections[x]
+    before_continue()
     while True:
 
-        # each loop through we'll check on the health of connections and drop unhealthy ones
-        for con in connections:
-            if connections[con]['requests'] > 20:
-                health = connections[con]['responses'] / connections[con]['requests']
-                if health < 0.5:
-                    print("fd " + str(con.fileno()) + " health = " + str(connections[con]['responses'] / connections[con]['requests']) + " req: " + str(connections[con]['requests']) + " resp: " + str(connections[con]['responses'])  )
-                    con.close()
-                    break
-
+        if len(connections) == 0:
+            before_continue()
+            continue 
         
-        if len(connections) < 3:
-            make_random_connection()
-        
-        while len(connections) == 0:
-            make_random_connection()
-
         writable = []
         exceptional = []
         readable = []
@@ -997,14 +1028,25 @@ def REQUEST_LOOP():
             for con in to_dump:
                 print("DUMPING connection due to negative fd")
                 del connections[con]
+            before_continue()
             continue
 
         for connection in exceptional:
             print("!!!!!!!Exceptional status on fd = " + str(connection.fileno()))
             if connection in connections:
                 del connections[connection]
+            before_continue()
             continue
 
+        readable_ordered = []
+        for connection in readable:
+            if connections[connection]['finished_connecting']:
+                readable_ordered.append(connection)
+
+        for connection in readable:
+            if not connections[connection]['finished_connecting']:
+                readable_ordered.append(connection)
+        
 
         for connection in readable:
             
@@ -1021,6 +1063,16 @@ def REQUEST_LOOP():
 
             if type(raw_packet) == int:
                 continue            
+
+            if not connections[connection]['finished_connecting']:
+                if FINISH_CONNECTING(connection,  raw_packet):
+                    connections[connection]['finished_connecting'] = True
+                else:
+                    try:
+                        del connections[connection]
+                    except:
+                        pass
+                continue
 
             if fd in partial:
                 partial[fd]['message_upto'] += len(raw_packet)
@@ -1105,6 +1157,7 @@ def REQUEST_LOOP():
 
                 elif message.type == ripple_pb2.TMLedgerInfoType.liTX_NODE:
                     #print("MTLEDGER NODE COUNT = " + str(len(message.nodes)))
+                    affected_accounts = set()
                     for x in message.nodes:
                         #print("TX NODEID: " + tohex(x.nodeid))
                         if not x.nodedata[-1] == 4:
@@ -1115,12 +1168,17 @@ def REQUEST_LOOP():
                         txid = fromhex(h[-66:-2])
                         #print("TXID: " + tohex(txid))
 
+                        
                         for acc in accounts:
                             if txid in accounts[acc]['wanted_tx']:
                                 #print(message)
+                                accounts[acc]['txseq'].add(accounts[acc]['wanted_tx'][txid]['acc_seq_no'])
                                 print("REMOVED :" + tohex(txid) + " FOUND IN LEDGER " + str(message.ledgerSeq) + " ORIGINAL ESTIMATE:" + str(accounts[acc]['wanted_tx'][txid]['ledger_seq_no_at_discovery'] ))
+                                affected_accounts.add(acc)
                                 del accounts[acc]['wanted_tx'][txid]
-
+                    
+                    for acc in affected_accounts:
+                        print(acc + ": " + str(accounts[acc]['txseq']))
                         #print("nodelen: " + str(len(x.nodedata)))
                  #       vl = parse_vlencoded(x.nodedata[:-33])
                         #print("tx proper:")
@@ -1164,15 +1222,31 @@ def REQUEST_LOOP():
 
                 
                 #print('mtTransaction: ' + tohex(SHA512HP(b'TXN\x00', message.rawTransaction))
-                tx = parse_stobject(message.rawTransaction, False)
                 
+
+                # filter cheaply before parsing 
+                found = False
+                for acc in accounts:
+                    if message.rawTransaction.find(accounts[acc]['raw']):
+                        found = True
+                        break
+
+                if not found:
+                    continue
+
+                tx = parse_stobject(message.rawTransaction, False)
+                 
                 if tx:
-                    
                     for acc in accounts:
-                        if accounts[acc]['raw'] == tx['Account']:
+                        if accounts[acc]['raw'] == tx['Account'] or 'Destination' in tx and accounts[acc]['raw'] == tx['Destination']:
+
                             txid = SHA512HP(b'TXN\x00', message.rawTransaction)
                             if txid in accounts[acc]['wanted_tx']:
                                 break
+
+                            seq = tx['Sequence']
+                            if 'Destination' in tx and accounts[acc]['raw'] == tx['Destination']:
+                                seq = 0xFFFFFFFF
 
                             accounts[acc]['wanted_tx'][txid] = {
                                 "acc_seq_no": tx['Sequence'],
@@ -1182,11 +1256,7 @@ def REQUEST_LOOP():
                             }
                             print('TX: ' + encode_xrpl_address(tx['Account']) + "[W"+str(len(accounts[acc]['wanted_tx']))+" D"+str(len(accounts[acc]['dropped_tx']))+"]" + ", " + str(tx['Sequence']) + " {" + str(last_ledger_seq_no) + "}  " + tohex(txid))
                             break
-            if message_type == 33: #(mtPROPOSE_LEDGER)
-                pass
-                #print('mtPROPOSE_LEDGER')
-                #print(message)        
-
+        
             if message_type == 15: #(mtEndpoints)
                 #print('mtEndpoints')
                 new_ips = set()
@@ -1251,7 +1321,6 @@ def REQUEST_LOOP():
                 last_ledger_seq_no = ledger_seq
             
                 print("mtVALIDATION ... " + str(len(validations[ledger_hash])) + "/" + str(len(UNL)) + " UNL peers have validated - ledger = " + str(ledger_seq))
-          
                 request_wanted_tx()
 
                 continue
@@ -1289,7 +1358,8 @@ def REQUEST_LOOP():
                     gl.queryDepth = 0
                     send_rand_peer(ENCODE_MESSAGE('mtGetLedger', gl))
                 
-
+        before_continue()
+        continue    
     return state
 
 # process commandline
@@ -1352,8 +1422,6 @@ if type(validator_site) == str and len(validator_site) > 0:
         UNL.append(sto['SigningPubKey']) 
 
     print("Loaded a UNL from validator site " + validator_site + " consisting of " + str(len(UNL)) + " validators")
-
-
 
 REQUEST_LOOP()
 
