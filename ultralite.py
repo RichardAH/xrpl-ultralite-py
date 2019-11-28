@@ -15,6 +15,7 @@ from datetime import datetime
 from ecdsa import SigningKey, SECP256k1
 from base58r import base58r
 from socket import *
+import select
 from stlookup import *
 import base64
 import urllib.request
@@ -41,7 +42,7 @@ accounts = {}
 
 peers = set()
 
-connections = []
+connections = {}
 
 if os.path.exists(peer_file):
     f = open(peer_file, "r+")
@@ -258,8 +259,8 @@ def PARSE_MESSAGE(mtype, msg):
             return ret
     except:
         print("warning could not parse message of type " + str(x))
-        return 0
-    return 0
+        return False
+    return False
 
 #encode a message object for sending out over the connection
 #including the 6 byte message type and size header
@@ -521,7 +522,11 @@ def CONNECT(server):
 
     #open the socket
     sock = socket(AF_INET, SOCK_STREAM)
-    sock.connect( (server, port) )
+    sock.settimeout(2.0)
+    try:
+        sock.connect( (server, port) )
+    except:
+        return False
 
     #attach the tls class  /  this tls lib has been modified to expose the finished messages for use in the rippled cookie
     connection = tlslite.TLSConnection(sock)
@@ -579,11 +584,11 @@ def CONNECT(server):
                 if re.match(r'^([0-9]{1,3}\.){3}[0-9]{1,3}:[0-9]{2,5}$', x):
                     if not x in peers:
                         peers.add(x)
-                        f = open(peer_file, "a+")
-                        if f:
-                            f.write(x + "\n")
-                            f.close()                    
-                    return CONNECT(x)
+                        #f = open(peer_file, "a+")
+                        #if f:
+                        #    f.write(x + "\n")
+                        #    f.close()                    
+                    return False #CONNECT(x)
   
         else:
             print("Failed to connected, received:")
@@ -622,9 +627,6 @@ def CONNECT(server):
 
 # request account state object from a recently closed ledger
 def REQUEST_LOOP():
-
-    #todo: add select(), support multiple connections
-    connection = connections[0]
 
     # data may come in asynchronously
     # so we collect it all first and then compute at the end
@@ -806,29 +808,52 @@ def REQUEST_LOOP():
             for n in range(t[0], t[1]+1):
                 if not n in seq_tx_map:
                     seq_tx_map[n] = []
-                seq_tx_map[n].append(t[2])       
+                seq_tx_map[n].append((t[2], t[3]))       
 
         for ledger_seq_no in seq_tx_map:
             if ledger_seq_no > last_ledger_seq_no:
                 continue
-
-            gl = ripple_pb2.TMGetLedger()
-            gl.ledgerSeq = ledger_seq_no
-            gl.itype = ripple_pb2.TMLedgerInfoType.liTX_NODE
             
-            for txid in seq_tx_map[ledger_seq_no]:
+            lentosend = len(seq_tx_map[ledger_seq_no])
 
-                if type(txid) == bytes:
-                    txid = tohex(txid)
+            packets = lentosend//20 + 1
 
-                #print("requesting " + txid + " from ledger " + str(ledger_seq_no))
-                for l in range(1, 8, 1):
-                    v = hex(l)[2:]
-                    key = txid[0:l] + ('0' * (66 - l - len(v))) + v
-                    gl.nodeIDs.append(fromhex(key))
+            for p in range(0, packets):
+                appended = 0
 
-                gl.queryDepth = 0
-                connection.send(ENCODE_MESSAGE('mtGetLedger', gl))
+                gl = ripple_pb2.TMGetLedger()
+                gl.ledgerSeq = ledger_seq_no
+                gl.itype = ripple_pb2.TMLedgerInfoType.liTX_NODE
+                
+                count = 0
+                for txid, depth in seq_tx_map[ledger_seq_no]:
+    
+                    if not count >= p*20:
+                        count += 1
+                        continue
+
+                    if count >= (p+1) * 20:
+                        break
+
+                    count += 1
+
+                    if type(txid) == bytes:
+                        txid = tohex(txid)
+
+                    #print("requesting " + txid + " from ledger " + str(ledger_seq_no))
+                    for l in range(1, depth, 1):
+                        v = hex(l)[2:]
+                        key = txid[0:l] + ('0' * (66 - l - len(v))) + v
+                        gl.nodeIDs.append(fromhex(key))
+                        appended += 1
+
+                if appended > 0:
+                    print("sending tx req batch p=" + str(p) + " count=" + str(count) + " contains=" + str(appended))
+                    gl.queryDepth = 0
+                    con = send_rand_peer(ENCODE_MESSAGE('mtGetLedger', gl))
+                    if con and connections[con]:
+                        connections[con]['requests'] += 1
+
 
     #unfinished
     def fetch_acc_txs(state):
@@ -861,298 +886,409 @@ def REQUEST_LOOP():
 
 
             # todo: start a clock and request retry counter to attempt to fetch these tx before trying a history node
-    
-    partial_message = []
-    partial_message_size = 0
-    partial_message_upto = 0
+   
+    def send(connection, x):
+        try:
+            connection.send(x)
+            return connection
+        except:
+            if connection in connections:
+                del connections[connection]  
+            print("send to connection fd=" + str(connection.fileno()) + " failed, removing connection")
+            return False        
 
-    requested_ledgers = {}
+    def send_rand_peer(x):
+        live_count = 0
+        sent = False
+        while len(connections) > 0 and not sent: 
+            sent = send([*connections][int(tohex(os.urandom(4)), 16) % len(connections)], x)
+        return sent
+
+
+    def request_wanted_tx():
+        tx_set = []
+        tx_drop = []
+        for acc in accounts:
+            for txid in accounts[acc]['wanted_tx']:
+                if accounts[acc]['wanted_tx'][txid]['ledger_seq_no_at_discovery'] <= 0:
+                    accounts[acc]['wanted_tx'][txid]['ledger_seq_no_at_discovery'] = ledger_seq - 1
+
+                maxseq = accounts[acc]['wanted_tx'][txid]['max_ledger_seq_no']
+                minseq = accounts[acc]['wanted_tx'][txid]['ledger_seq_no_at_discovery']
+                if accounts[acc]['wanted_tx'][txid]['aggression'] == 3:
+                    minseq += 1
+                    maxseq = minseq + 1 
+                #if maxseq < last_ledger_seq_no and maxseq + 5 > last_ledger_seq_no :
+                if maxseq + 7 < last_ledger_seq_no:
+                    tx_drop.append(txid)       
+                elif minseq <= last_ledger_seq_no :
+                    tx_set.append( (minseq, maxseq, txid, accounts[acc]['wanted_tx'][txid]['aggression']) )
+                    
+                    if last_ledger_seq_no - accounts[acc]['wanted_tx'][txid]['ledger_seq_no_at_discovery'] > 2:
+                        accounts[acc]['wanted_tx'][txid]['aggression'] += 1
+                        if accounts[acc]['wanted_tx'][txid]['aggression'] > 8:
+                            accounts[acc]['wanted_tx'][txid]['aggression'] = 8
+
+        for txid in tx_drop:
+            for acc in accounts:
+                print("DROPPED " + tohex(txid) + " ledger_added: " + str(accounts[acc]['wanted_tx'][txid]['ledger_seq_no_at_discovery']) + " max: " + str(accounts[acc]['wanted_tx'][txid]['max_ledger_seq_no']))
+                accounts[acc]['dropped_tx'].append(txid)
+                del accounts[acc]['wanted_tx'][txid]
+
+        request_tx_batch(tx_set)
+ 
+    #partial_message = []
+    #partial_message_size = 0
+    #partial_message_upto = 0
+
+    partial = {}
 
     validations = {}
 
     #message loop
 
-    recent_tx = ""
-    
+    def make_random_connection():
+        attempts = 0
+        while attempts < 20:
+            attempts += 1
+            server = list(peers)[int(tohex(os.urandom(4)), 16) % len(peers)]   
+            try:
+                connection = CONNECT(server)
+                if connection:
+                    connections[connection] = {
+                        'requests': 0,
+                        'responses': 0
+                    }
+                    return True    
+            except:
+                continue 
+        return False
+
+
     while True:
 
-        #collect the raw packet from the connection
-        raw_packet = connection.recv(0xffff)
-        
-        if partial_message_size > 0:
-            partial_message_upto += len(raw_packet)
-            partial_message.append(raw_packet)
-            print("waiting for more data to complete message... " + str(partial_message_upto) + "/" + str(partial_message_size))
-            if partial_message_upto < partial_message_size:
-                continue
-    
-            #execution to here means we've finished parsing our mega packet
-            raw_packet = b''.join(partial_message)
-            partial_message = []
-            partial_message_size = 0
-            partial_message_upto = 0
-        
-        #parse the 6 byte header which is in network byte order
-        message_size = int.from_bytes(raw_packet[0:4], byteorder='big')
-        message_type = int.from_bytes(raw_packet[4:6], byteorder='big')
-        message_type_str = MT_TO_STR(message_type)
+        # each loop through we'll check on the health of connections and drop unhealthy ones
+        for con in connections:
+            if connections[con]['requests'] > 20:
+                health = connections[con]['responses'] / connections[con]['requests']
+                if health < 0.5:
+                    print("fd " + str(con.fileno()) + " health = " + str(connections[con]['responses'] / connections[con]['requests']) + " req: " + str(connections[con]['requests']) + " resp: " + str(connections[con]['responses'])  )
+                    con.close()
+                    break
 
-        if len(raw_packet) < message_size:
-            partial_message_size = message_size
-            partial_message_upto = len(raw_packet) - 6
-            print("waiting for more data to complete message... " + str(partial_message_upto) + "/" + str(partial_message_size))
-            partial_message.append(raw_packet)
+        
+        if len(connections) < 3:
+            make_random_connection()
+        
+        while len(connections) == 0:
+            make_random_connection()
+
+        writable = []
+        exceptional = []
+        readable = []
+
+        try:
+            readable, writable, exceptional = select.select([*connections], writable, [*connections])
+        except:
+            to_dump = []
+            for con in connections:
+                if con.fileno() < 0:
+                    to_dump.append(con)
+            for con in to_dump:
+                print("DUMPING connection due to negative fd")
+                del connections[con]
             continue
 
-        #parse the message itself
-        message = PARSE_MESSAGE(message_type, raw_packet[6:message_size+6])
+        for connection in exceptional:
+            print("!!!!!!!Exceptional status on fd = " + str(connection.fileno()))
+            if connection in connections:
+                del connections[connection]
+            continue
 
-        #check for pings and respond with a pong
-        if message_type == 3: #(mtPING)
-            message.type = message.ptPONG 
-            connection.send(ENCODE_MESSAGE('mtPing', message)) 
 
-        # these are the state xfer messages we're interested in
-        if message_type == 32: #(mtLEDGER_DATA)
-            #print("mtLEDGER_DATA:")
-            msg_ledger_hash = tohex(message.ledgerHash)
-
-            if not msg_ledger_hash in request_state and not message.type == ripple_pb2.TMLedgerInfoType.liTX_NODE:
-                print("1 we were sent a ledger base we didn't ask for " + tohex(msg_ledger_hash))
-                continue
+        for connection in readable:
             
-            state = {}
-            if msg_ledger_hash in state:
-                state = request_state[msg_ledger_hash]
+            fd = connection.fileno()
 
-            if message.type == ripple_pb2.TMLedgerInfoType.liBASE:
-                print("liBASE received")
-                nodeid = 0
+            #collect the raw packet from the connection
+            gen = connection.readAsync(0xffff)
 
-                for x in message.nodes:
-                    print("BASE NODE " + str(nodeid))
+            raw_packet = -1
+            try:
+                raw_packet = next(gen)
+            except:
+                pass
 
-                    ledger_hash = x.nodedata[-42:-10] # NB: this could change? we should parse this properly
+            if type(raw_packet) == int:
+                continue            
 
-                    if nodeid == 0: #can calculate ledger hash from this node
-                        state["calculated_ledger_hash"] = SHA512H(b'LWR\x00' + x.nodedata)
-                        state["reported_account_root_hash"] = x.nodedata[-42:-10] # NB: this could change? we should parse this properly
-                        state['got_base_data'] = True
-                    elif nodeid == 1:
-                        state["calculated_account_root_hash"] = process_as_node(msg_ledger_hash, x, fromhex('0' * 66))
+            if fd in partial:
+                partial[fd]['message_upto'] += len(raw_packet)
+                partial[fd]['message'].append(raw_packet)
+                print("waiting for more data to complete message... " + str(partial[fd]['message_upto']) + "/" + str(partial[fd]['message_size']))
+                if partial[fd]['message_upto'] < partial[fd]['message_size']:
+                    continue
+        
+                #execution to here means we've finished parsing our mega packet
+                raw_packet = b''.join(partial[fd]['message'])
+                del partial[fd]
+            
+            #parse the 6 byte header which is in network byte order
+            message_size = int.from_bytes(raw_packet[0:4], byteorder='big')
+            message_type = int.from_bytes(raw_packet[4:6], byteorder='big')
+            message_type_str = MT_TO_STR(message_type)
 
-                    #print(tohex(x.nodedata))
-                    nodeid += 1
+            if len(raw_packet) < message_size:
+                partial[fd] = {
+                    "message_size": message_size,
+                    "message_upto": len(raw_packet) - 6,
+                    "message": [raw_packet]
+                }
+                print("waiting for more data to complete messag on fd="+str(fd)+"e... " + str(partial[fd]['message_upto']) + "/" + str(partial[fd]['message_size']))
+                continue
 
-                if verify_as_nodes(state):
-                    print("as node request finished")
-                    fetch_acc_txs(state)
+            #parse the message itself
+            message = PARSE_MESSAGE(message_type, raw_packet[6:message_size+6])
 
-            elif message.type == ripple_pb2.TMLedgerInfoType.liTX_NODE:
-                #print("MTLEDGER NODE COUNT = " + str(len(message.nodes)))
-                for x in message.nodes:
-                    #print("TX NODEID: " + tohex(x.nodeid))
-                    if not x.nodedata[-1] == 4:
+            if not message:
+                print("WARNING unreadable message")
+                continue
+
+            #check for pings and respond with a pong
+            if message_type == 3: #(mtPING)
+                print("mtPING")
+                message.type = message.ptPONG
+                try: 
+                    connection.send(ENCODE_MESSAGE('mtPing', message)) 
+                except:
+                    if connection in connections:
+                        del connections[connection]
                         continue
-    
-                    #x.nodedata = decompress_node(x.nodedata)
-                    h = tohex(x.nodedata)
-                    txid = fromhex(h[-66:-2])
-                    #print("TXID: " + tohex(txid))
 
-                    for acc in accounts:
-                        if txid in accounts[acc]['wanted_tx']:
-                            #print(message)
-                            print("REMOVED :" + tohex(txid) + " FOUND IN LEDGER " + str(message.ledgerSeq) + " ORIGINAL ESTIMATE:" + str(accounts[acc]['wanted_tx'][txid]['ledger_seq_no_at_discovery'] ))
-                            del accounts[acc]['wanted_tx'][txid]
+            # these are the state xfer messages we're interested in
+            if message_type == 32: #(mtLEDGER_DATA)
+                if connection and connections[connection]:
+                    connections[connection]['responses'] += 1
 
-                    #print("nodelen: " + str(len(x.nodedata)))
-             #       vl = parse_vlencoded(x.nodedata[:-33])
-                    #print("tx proper:")
-             #       tx = parse_stobject(vl[0], False)
-                    #print("meta:")
-             #       md = parse_stobject(vl[1], False)
+                msg_ledger_hash = tohex(message.ledgerHash)
 
-#                    #parse_stobject(x.nodedata[2:-33], True)
-
-                    
-                    #d = tohex(x.nodedata)
-                    #print(d)
-                    #offset = 2
-                    #for i in range(0, 16):
-                    #    print("hash " + str(i) + ":" + d[i*64 + offset:(i+1)*64 + offset])
-
-                    
-                    #for y in parse_vlencoded(x.nodedata[:-33]):
-                    #    parse_stobject(y, True) 
-
-
-            elif message.type == ripple_pb2.TMLedgerInfoType.liAS_NODE:
-                print("liAS_NODE")
-                for x in message.nodes:
-                    process_as_node(msg_ledger_hash, x)
-
-                if verify_as_nodes(state):
-                    fetch_acc_txs(state)
-                    print("as node request finished")
-
-        if message_type == 42: #GetObjectByHash
-            pass
-            #print('get object by hash: -------')
-            #print(message)
-            #print('-----------')
-
-        if message_type == 30: #Transaction
-            #wait for at least one validation before we start wanting tx
-            if last_ledger_seq_no == -1:
-                continue
-
-            if recent_tx == "":
-                recent_tx = SHA512HP(b'TXN\x00', message.rawTransaction)
-            #print('mtTransaction: ' + tohex(SHA512HP(b'TXN\x00', message.rawTransaction))
-            tx = parse_stobject(message.rawTransaction, False)
-            
-            if tx:
-                txid = SHA512HP(b'TXN\x00', message.rawTransaction)
+                if not msg_ledger_hash in request_state and not message.type == ripple_pb2.TMLedgerInfoType.liTX_NODE:
+                    print("1 we were sent a ledger base we didn't ask for " + tohex(msg_ledger_hash))
+                    continue
                 
-                for acc in accounts:
-                    if accounts[acc]['raw'] == tx['Account']:
-                        accounts[acc]['wanted_tx'][txid] = {
-                            "acc_seq_no": tx['Sequence'],
-                            "ledger_seq_no_at_discovery": last_ledger_seq_no,
-                            "max_ledger_seq_no": tx['LastLedgerSequence']
-                        }
-                        print('TX: ' + encode_xrpl_address(tx['Account']) + "["+str(len(accounts[acc]['wanted_tx']))+"]" + ", " + str(tx['Sequence']) + " {" + str(last_ledger_seq_no) + "}  " + tohex(txid))
-        if message_type == 33: #(mtPROPOSE_LEDGER)
-            pass
-            #print('mtPROPOSE_LEDGER')
-            #print(message)        
+                state = {}
+                if msg_ledger_hash in state:
+                    state = request_state[msg_ledger_hash]
 
-        if message_type == 15: #(mtEndpoints)
-            #print('mtEndpoints')
-            new_ips = set()
-            for endpoint in message.endpoints_v2:
-                ip = endpoint.endpoint.replace('[::', '').replace('ffff:', '').replace(']', '')
-                if re.match(r'^([0-9]{1,3}\.){3}[0-9]{1,3}:[0-9]{2,5}$', ip) != None:
-                    if not ip in peers:
-                        peers.add(ip)
-                        new_ips.add(ip)
-            f = open(peer_file, "a+")
-            if f:
-                for ip in new_ips:
-                    #print("wrote " + ip)
-                    f.write(ip + "\n")
-                f.close()
-            #print(message)
+                if message.type == ripple_pb2.TMLedgerInfoType.liBASE:
+                    print("liBASE received")
+                    nodeid = 0
+
+                    for x in message.nodes:
+                        print("BASE NODE " + str(nodeid))
+
+                        ledger_hash = x.nodedata[-42:-10] # NB: this could change? we should parse this properly
+
+                        if nodeid == 0: #can calculate ledger hash from this node
+                            state["calculated_ledger_hash"] = SHA512H(b'LWR\x00' + x.nodedata)
+                            state["reported_account_root_hash"] = x.nodedata[-42:-10] # NB: this could change? we should parse this properly
+                            state['got_base_data'] = True
+                        elif nodeid == 1:
+                            state["calculated_account_root_hash"] = process_as_node(msg_ledger_hash, x, fromhex('0' * 66))
+
+                        #print(tohex(x.nodedata))
+                        nodeid += 1
+
+                    if verify_as_nodes(state):
+                        print("as node request finished")
+                        fetch_acc_txs(state)
+
+                elif message.type == ripple_pb2.TMLedgerInfoType.liTX_NODE:
+                    #print("MTLEDGER NODE COUNT = " + str(len(message.nodes)))
+                    for x in message.nodes:
+                        #print("TX NODEID: " + tohex(x.nodeid))
+                        if not x.nodedata[-1] == 4:
+                            continue
         
+                        #x.nodedata = decompress_node(x.nodedata)
+                        h = tohex(x.nodedata)
+                        txid = fromhex(h[-66:-2])
+                        #print("TXID: " + tohex(txid))
 
-        if message_type == 41: #(mtVALIDATION)
-            #todo check if validations are from our selected UNL
+                        for acc in accounts:
+                            if txid in accounts[acc]['wanted_tx']:
+                                #print(message)
+                                print("REMOVED :" + tohex(txid) + " FOUND IN LEDGER " + str(message.ledgerSeq) + " ORIGINAL ESTIMATE:" + str(accounts[acc]['wanted_tx'][txid]['ledger_seq_no_at_discovery'] ))
+                                del accounts[acc]['wanted_tx'][txid]
 
-            sto = parse_stobject(message.validation, False)#True)
+                        #print("nodelen: " + str(len(x.nodedata)))
+                 #       vl = parse_vlencoded(x.nodedata[:-33])
+                        #print("tx proper:")
+                 #       tx = parse_stobject(vl[0], False)
+                        #print("meta:")
+                 #       md = parse_stobject(vl[1], False)
 
-            ledger_hash = sto['LedgerHash']
+    #                    #parse_stobject(x.nodedata[2:-33], True)
+
+                        
+                        #d = tohex(x.nodedata)
+                        #print(d)
+                        #offset = 2
+                        #for i in range(0, 16):
+                        #    print("hash " + str(i) + ":" + d[i*64 + offset:(i+1)*64 + offset])
+
+                        
+                        #for y in parse_vlencoded(x.nodedata[:-33]):
+                        #    parse_stobject(y, True) 
+
+
+                elif message.type == ripple_pb2.TMLedgerInfoType.liAS_NODE:
+                    print("liAS_NODE")
+                    for x in message.nodes:
+                        process_as_node(msg_ledger_hash, x)
+
+                    if verify_as_nodes(state):
+                        fetch_acc_txs(state)
+                        print("as node request finished")
+
+            if message_type == 42: #GetObjectByHash
+                pass
+                #print('get object by hash: -------')
+                #print(message)
+                #print('-----------')
+
+            if message_type == 30: #Transaction
+                #wait for at least one validation before we start wanting tx
+                if last_ledger_seq_no == -1:
+                    continue
+
+                
+                #print('mtTransaction: ' + tohex(SHA512HP(b'TXN\x00', message.rawTransaction))
+                tx = parse_stobject(message.rawTransaction, False)
+                
+                if tx:
+                    
+                    for acc in accounts:
+                        if accounts[acc]['raw'] == tx['Account']:
+                            txid = SHA512HP(b'TXN\x00', message.rawTransaction)
+                            if txid in accounts[acc]['wanted_tx']:
+                                break
+
+                            accounts[acc]['wanted_tx'][txid] = {
+                                "acc_seq_no": tx['Sequence'],
+                                "ledger_seq_no_at_discovery": last_ledger_seq_no,
+                                "max_ledger_seq_no": tx['LastLedgerSequence'],
+                                "aggression": 3
+                            }
+                            print('TX: ' + encode_xrpl_address(tx['Account']) + "[W"+str(len(accounts[acc]['wanted_tx']))+" D"+str(len(accounts[acc]['dropped_tx']))+"]" + ", " + str(tx['Sequence']) + " {" + str(last_ledger_seq_no) + "}  " + tohex(txid))
+                            break
+            if message_type == 33: #(mtPROPOSE_LEDGER)
+                pass
+                #print('mtPROPOSE_LEDGER')
+                #print(message)        
+
+            if message_type == 15: #(mtEndpoints)
+                #print('mtEndpoints')
+                new_ips = set()
+                for endpoint in message.endpoints_v2:
+                    ip = endpoint.endpoint.replace('[::', '').replace('ffff:', '').replace(']', '')
+                    if re.match(r'^([0-9]{1,3}\.){3}[0-9]{1,3}:[0-9]{2,5}$', ip) != None:
+                        if not ip in peers:
+                            peers.add(ip)
+                            new_ips.add(ip)
+                #f = open(peer_file, "a+")
+                #if f:
+                #    for ip in new_ips:
+                #        #print("wrote " + ip)
+                #        f.write(ip + "\n")
+                #    f.close()
+                #print(message)
             
-            signing_key = sto['SigningPubKey']
 
-            if not ledger_hash in validations:
-                validations[ledger_hash] = {}
+            if message_type == 41: #(mtVALIDATION)
+                #todo check if validations are from our selected UNL
+                sto = parse_stobject(message.validation, False)#True)
 
-            #todo: check validation signature
-            if signing_key in UNL and not signing_key in validations[ledger_hash]:
-                validations[ledger_hash][signing_key] = True
-           
+                ledger_hash = sto['LedgerHash']
+                ledger_seq = sto['LedgerSequence'] # int(message.validation.hex()[12:20], 16) #todo change this to pull from sto
+                
+                signing_key = sto['SigningPubKey']
+
+                if not ledger_hash in validations:
+                    validations[ledger_hash] = {}
+
+                to_prune = []
+                for x in validations:
+                    for y in validations[x]:
+                        if validations[x][y] <= ledger_seq - 5:
+                            to_prune.append(x)
+                            break
+
+                for x in to_prune:
+                    del validations[x]
+    
+
+                #todo: check validation signature
+                if signing_key in UNL and not signing_key in validations[ledger_hash]:
+                    validations[ledger_hash][signing_key] = ledger_seq
+               
+
+                #print(tohex(message.validation))
+
+                #print( "PK in UNL? " + str( (signing_key in UNL) ) )
+
+                if len(validations[ledger_hash]) < len(UNL) * 0.8:
+                    continue
+                
+
+                # execution to here indicates the ledger is validated and we want to make our request now
+                #time.sleep(4) #ensure everyone has the ledger on file
 
 
-            #print(tohex(message.validation))
+                if last_ledger_seq_no >= ledger_seq:
+                    continue
 
-            #print( "PK in UNL? " + str( (signing_key in UNL) ) )
-
-            if len(validations[ledger_hash]) < len(UNL) * 0.8:
-                continue
+                last_ledger_seq_no = ledger_seq
             
+                print("mtVALIDATION ... " + str(len(validations[ledger_hash])) + "/" + str(len(UNL)) + " UNL peers have validated - ledger = " + str(ledger_seq))
+          
+                request_wanted_tx()
 
-            # execution to here indicates the ledger is validated and we want to make our request now
-            #time.sleep(4) #ensure everyone has the ledger on file
-
-            ledger_seq = sto['LedgerSequence'] # int(message.validation.hex()[12:20], 16) #todo change this to pull from sto
-            ledger_hash = sto['LedgerHash']
-
-            if last_ledger_seq_no == ledger_seq:
                 continue
-
-            last_ledger_seq_no = ledger_seq
         
-            if ledger_hash in requested_ledgers:
-                continue
-
-            print("mtVALIDATION ... " + str(len(validations[ledger_hash])) + "/" + str(len(UNL)) + " UNL peers have validated")
-       
-            if recent_tx == "":
-                continue
-
-            tx_set = []
-            tx_drop = []
-            for acc in accounts:
-                for txid in accounts[acc]['wanted_tx']:
-                    if accounts[acc]['wanted_tx'][txid]['ledger_seq_no_at_discovery'] <= 0:
-                        accounts[acc]['wanted_tx'][txid]['ledger_seq_no_at_discovery'] = ledger_seq - 1
-
-                    maxseq = accounts[acc]['wanted_tx'][txid]['max_ledger_seq_no']
-                    minseq = accounts[acc]['wanted_tx'][txid]['ledger_seq_no_at_discovery']
-                    if maxseq < last_ledger_seq_no and maxseq + 5 > last_ledger_seq_no :
-                        tx_set.append( (minseq, maxseq, txid) )
-                    elif maxseq + 7 < last_ledger_seq_no:
-                        tx_drop.append(txid)       
-    
-            for txid in tx_drop:
-                for acc in accounts:
-                    print("DROPPED " + tohex(txid) + " ledger_added: " + str(accounts[acc]['wanted_tx'][txid]['ledger_seq_no_at_discovery']) + " max: " + str(accounts[acc]['wanted_tx'][txid]['max_ledger_seq_no']))
-                    del accounts[acc]['wanted_tx'][txid]
-
-            request_tx_batch(tx_set)
-
-            #request_tx(ledger_seq+1, recent_tx)
-            #request_tx(ledger_seq, recent_tx)
-            #request_tx(ledger_seq-1, recent_tx)
-            #request_tx(51656707,'a5630e722b80014df48a03983362fb219f7ef2c2259e7a50163de8e5b1801e10')
-
-            #request_tx(	51655998,'1456463B4C3C2C2E39EE9683C42494600BA3EA5DE048A4546E38273AB7EA3510')
-            continue
-    
-            print("requesting ledger " + str(ledger_seq) + " hash = " + tohex(ledger_hash)) 
-            # first request the base ledger info
-            gl = ripple_pb2.TMGetLedger()
-            gl.ledgerHash = ledger_hash
-            gl.ledgerSeq = ledger_seq
-            gl.queryDepth = 1
-            gl.itype = ripple_pb2.TMLedgerInfoType.liBASE
-            connection.send(ENCODE_MESSAGE('mtGetLedger', gl))
-            requested_ledgers[ledger_hash] = TIME()
-            
-            state = new_state()
-            request_state[ledger_hash] = state
-
-            state['requested_ledger_hash'] = ledger_hash    
-
-            for acc in accounts:
-                requested_node = accounts[acc]['asroot_key']
-
-                print('requesting node: ' + requested_node)
-                # now request the account state info
+                print("requesting ledger " + str(ledger_seq) + " hash = " + tohex(ledger_hash)) 
+                # first request the base ledger info
                 gl = ripple_pb2.TMGetLedger()
                 gl.ledgerHash = ledger_hash
                 gl.ledgerSeq = ledger_seq
-                gl.itype = ripple_pb2.TMLedgerInfoType.liAS_NODE
-               
-                for l in range(1, len(requested_node)):
-                    v = hex(l)[2:]
-                    key = requested_node[0:l] + ('0' * (66 - l - len(v))) + v
-                    gl.nodeIDs.append(fromhex(key))
+                gl.queryDepth = 1
+                gl.itype = ripple_pb2.TMLedgerInfoType.liBASE
+                send_rand_peer(ENCODE_MESSAGE('mtGetLedger', gl))
+                #requested_ledgers[ledger_hash] = TIME()
+                
+                state = new_state()
+                request_state[ledger_hash] = state
 
-                gl.queryDepth = 0
-                connection.send(ENCODE_MESSAGE('mtGetLedger', gl))
-            
+                state['requested_ledger_hash'] = ledger_hash    
+
+                for acc in accounts:
+                    requested_node = accounts[acc]['asroot_key']
+
+                    print('requesting node: ' + requested_node)
+                    # now request the account state info
+                    gl = ripple_pb2.TMGetLedger()
+                    gl.ledgerHash = ledger_hash
+                    gl.ledgerSeq = ledger_seq
+                    gl.itype = ripple_pb2.TMLedgerInfoType.liAS_NODE
+                   
+                    for l in range(1, len(requested_node)):
+                        v = hex(l)[2:]
+                        key = requested_node[0:l] + ('0' * (66 - l - len(v))) + v
+                        gl.nodeIDs.append(fromhex(key))
+
+                    gl.queryDepth = 0
+                    send_rand_peer(ENCODE_MESSAGE('mtGetLedger', gl))
+                
 
     return state
 
@@ -1184,7 +1320,8 @@ for raccount in argv:
     accounts[acc] = {
         "raw": raccount, 
         "asroot_key": asroot_key, #asroot
-        "wanted_tx": {} # txid->seqno
+        "wanted_tx": {}, # txid->seqno
+        "dropped_tx": [] #txid
     }
     if not os.path.exists(acc):
         os.mkdir(acc)
@@ -1217,11 +1354,6 @@ if type(validator_site) == str and len(validator_site) > 0:
     print("Loaded a UNL from validator site " + validator_site + " consisting of " + str(len(UNL)) + " validators")
 
 
-while len(connections) < 1:
-    server = list(peers)[int(tohex(os.urandom(4)), 16) % len(peers)]   
-    connection = CONNECT(server)
-    if connection:
-        connections.append(connection)
 
 REQUEST_LOOP()
 
