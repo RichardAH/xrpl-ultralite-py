@@ -10,7 +10,7 @@ UNL = [] #we'll populate from the below if specified
 validator_site = "https://vl.ripple.com"
 peer_file = "peers.txt"
 
-PEER_CON_LIMIT = 1#3
+PEER_CON_LIMIT = 2
 
 import traceback
 from interval import IntervalSet
@@ -666,7 +666,6 @@ def REQUEST_LOOP():
                 "account_key": False,
                 "account_path_nodes": {}, #these are the inner nodes that lead down to the account, including root, indexed by depth
                 "got_account_data" :  False,
-                "acc_seq_no":  -1, #last account sequence number
                 "last_tx_ledger_seq_no": -1, #last ledger a transaction changed this account
                 "last_tx_id": '',
                 "proven_correct": False #indicates all the hashes have been checked up the tree
@@ -831,7 +830,8 @@ def REQUEST_LOOP():
             
             lentosend = len(seq_tx_map[ledger_seq_no])
 
-            packets = lentosend//40 + 1
+            packet_size = 20
+            packets = lentosend//packet_size + 1
 
             for p in range(0, packets):
                 appended = 0
@@ -843,11 +843,11 @@ def REQUEST_LOOP():
                 count = 0
                 for txid, depth in seq_tx_map[ledger_seq_no]:
     
-                    if not count >= p*20:
+                    if not count >= p*packet_size:
                         count += 1
                         continue
 
-                    if count >= (p+1) * 20:
+                    if count >= (p+1) * packet_size:
                         break
 
                     count += 1
@@ -855,7 +855,7 @@ def REQUEST_LOOP():
                     if type(txid) == bytes:
                         txid = tohex(txid)
 
-                    #print("requesting " + txid + " from ledger " + str(ledger_seq_no))
+                    print("requesting " + txid + " from ledger " + str(ledger_seq_no))
                     for l in range(1, depth, 1):
                         v = hex(l)[2:]
                         key = txid[0:l] + ('0' * (66 - l - len(v))) + v
@@ -882,9 +882,9 @@ def REQUEST_LOOP():
             print("fetch acc txs: " + acc)
             astate = state['accounts'][acc]
             account = accounts[acc]
-            processed_seq_nos = account['txseq']
-            if not processed_seq_nos.contains(astate['acc_seq_no']):
-                request_tx(astate['last_tx_ledger_seq_no'], astate['last_tx_id'])       
+            #processed_seq_nos = account['txseq']
+            #if not processed_seq_nos.contains(astate['acc_seq_no']):
+            #    request_tx(astate['last_tx_ledger_seq_no'], astate['last_tx_id'])       
 
             continue
             #todo: place back-fetch on another thread/process
@@ -942,7 +942,7 @@ def REQUEST_LOOP():
                     minseq += 1
                     maxseq = minseq + 1 
                 #if maxseq < last_ledger_seq_no and maxseq + 5 > last_ledger_seq_no :
-                if maxseq + 20 < last_ledger_seq_no:
+                if maxseq + 20 < last_ledger_seq_no and not 'dont_drop' in accounts[acc]['wanted_tx'][txid]:
                     tx_drop.append(txid)       
                 elif minseq <= last_ledger_seq_no :
                     tx_set.append( (minseq, maxseq, txid, 12 ) ) #accounts[acc]['wanted_tx'][txid]['aggression']) )
@@ -951,6 +951,9 @@ def REQUEST_LOOP():
                         accounts[acc]['wanted_tx'][txid]['aggression'] += 1
                         if accounts[acc]['wanted_tx'][txid]['aggression'] > 8:
                             accounts[acc]['wanted_tx'][txid]['aggression'] = 8
+
+                    #if 'dont_drop' in  accounts[acc]['wanted_tx'][txid]:
+                    #    del  accounts[acc]['wanted_tx'][txid]['dont_drop']
 
         for txid in tx_drop:
             for acc in accounts:
@@ -999,9 +1002,9 @@ def REQUEST_LOOP():
                 if not con:
                     prune.append(con)
                     continue
-                if connections[con]['requests'] > 30:
+                if connections[con]['requests'] > 50:
                     health = connections[con]['responses'] / connections[con]['requests']
-                    if health < 0.5:
+                    if health < 0.2:
                         print("fd " + str(con.fileno()) + " health = " + str(connections[con]['responses'] / connections[con]['requests']) + " req: " + str(connections[con]['requests']) + " resp: " + str(connections[con]['responses'])  )
                         del connections[con]
                         break
@@ -1171,8 +1174,8 @@ def REQUEST_LOOP():
                         
                         for acc in accounts:
                             if txid in accounts[acc]['wanted_tx']:
+
                                 #print(message)
-                                accounts[acc]['txseq'].add(accounts[acc]['wanted_tx'][txid]['acc_seq_no'])
                                 print("REMOVED :" + tohex(txid) + " FOUND IN LEDGER " + str(message.ledgerSeq) + " ORIGINAL ESTIMATE:" + str(accounts[acc]['wanted_tx'][txid]['ledger_seq_no_at_discovery'] ))
                                 affected_accounts.add(acc)
                                 del accounts[acc]['wanted_tx'][txid]
@@ -1184,31 +1187,68 @@ def REQUEST_LOOP():
                                     modified = md['AffectedNodes']['ModifiedNode']
                                     if type(modified) != list:
                                         modified = [modified]
-
+                        
+                                    found_node = False
                                     for n in modified:
                                         #print(node['FinalFields'])
-                                        if 'PreviousTxnID' in n and \
-                                        'PreviousTxnLgrSeq' in n and \
-                                        'FinalFields' in n and \
-                                        'PreviousFields' in n and \
-                                        'Account' in n['FinalFields'] and \
-                                        'Sequence' in n['PreviousFields'] and \
-                                        n['FinalFields']['Account'] == accounts[acc]['raw']:
-                                            seq = n['PreviousFields']['Sequence'] - 1
-                                            if not accounts[acc]['txseq'].contains(seq) and not n['PreviousTxnID'] in accounts[acc]['wanted_tx']:
-                                                accounts[acc]['wanted_tx'][n['PreviousTxnID']] = {
-                                                    "acc_seq_no": seq,
-                                                    "ledger_seq_no_at_discovery": n['PreviousTxnLgrSeq'],
-                                                    "max_ledger_seq_no": n['PreviousTxnLgrSeq'],
-                                                    "aggression": 4
-                                                } 
-                                                print("Adding missing TXID to wanted:" + encode_xrpl_address(n['FinalFields']['Account']) + " prev txid " + \
-                                                tohex(n['PreviousTxnID']) + " ldgseq=" + str(n['PreviousTxnLgrSeq']) + " accseq=" + \
-                                                str(n['PreviousFields']['Sequence']))
+                                        if not 'PreviousTxnID' in n or \
+                                        not 'PreviousTxnLgrSeq' in n or \
+                                        not 'FinalFields' in n or \
+                                        not 'Account' in n['FinalFields'] or \
+                                        not n['FinalFields']['Account'] == accounts[acc]['raw']:
+                                            continue
 
+                                        found_node = True
+                                        lastseenindex = (message.ledgerSeq << 32) + md['TransactionIndex']
+                                        accounts[acc]['tx_ledger_seq'][n['PreviousTxnID']] = n['PreviousTxnLgrSeq']
+                                        accounts[acc]['tx_chain'][txid] = n['PreviousTxnID']
+                                       
+                                        if accounts[acc]['tx_first_fsi'] < lastseenindex:
+                                            accounts[acc]['tx_first'] = txid                                            
+                                            accounts[acc]['tx_first_fsi'] = lastseenindex
+                            
+                                        if lastseenindex > accounts[acc]['tx_last_lsi']:
+                                            accounts[acc]['tx_last'] =  txid
+                                            accounts[acc]['tx_last_lsi'] = lastseenindex
+
+                                        if not n['PreviousTxnID'] in accounts[acc]['tx_chain'] and\
+                                        not n['PreviousTxnID'] in accounts[acc]['wanted_tx']:
+                                            accounts[acc]['wanted_tx'][n['PreviousTxnID']] = {
+                                                "ledger_seq_no_at_discovery": n['PreviousTxnLgrSeq'],
+                                                "max_ledger_seq_no": n['PreviousTxnLgrSeq'],
+                                                "aggression": 4,
+                                                "dont_drop": True
+                                            } 
+                                            print("Adding missing TXID to wanted:" + encode_xrpl_address(n['FinalFields']['Account']) + " prev txid " + \
+                                            tohex(n['PreviousTxnID']) + " ldgseq=" + str(n['PreviousTxnLgrSeq']))
+                                    if not found_node:
+                                        print("skipping tx with missing PreviousTxnID/PreviousTxnLgrSeq " + tohex(txid))
                     
-                    for acc in affected_accounts:
-                        print(acc + ": " + str(accounts[acc]['txseq']))
+
+                            missing = 0
+                            for tx in accounts[acc]['tx_chain']:
+                                if not accounts[acc]['tx_chain'][tx] in accounts[acc]['tx_chain']:
+                                    missing += 1
+                                    if not tx in accounts[acc]['wanted_tx']:
+                                        if tx in accounts[acc]['tx_ledger_seq']:
+                                            accounts[acc]['wanted_tx'][tx] = {
+                                                "ledger_seq_no_at_discovery": accounts[acc]['tx_ledger_seq'][tx],
+                                                "max_ledger_seq_no": accounts[acc]['tx_ledger_seq'][tx],
+                                                "aggression": 4,
+                                                "dont_drop": True
+                                            }
+                                            print("1Adding missing TXID to wanted:" + acc + " txid " + \
+                                            tohex(tx) + " ldgseq=" + str(accounts[acc]['tx_ledger_seq'][tx]))
+                                        else:
+                                            print("MISSING txid " + acc + " txid " + tohex(tx) + " but no idea which ledger to look in")
+                                    else:
+                                        if not tx in accounts[acc]['tx_ledger_seq']:
+                                            print("missing tx " + acc + " txid " + tohex(tx) + " ldgseq=??? range= " + str(accounts[acc]['wanted_tx'][tx]['ledger_seq_no_at_discovery']) + " - " + str(accounts[acc]['wanted_tx'][tx]['max_ledger_seq']))  
+                                        else:
+                                            print("missing tx " + acc + " txid " + tohex(tx) + " ldgseq=" + str(accounts[acc]['tx_ledger_seq'][tx]) + " already in wanted_tx")
+
+                            print("missing transactions: >=" + str(missing) + " out of " + str(len(accounts[acc]['tx_chain'])))     
+
                         #print("nodelen: " + str(len(x.nodedata)))
                  #       vl = parse_vlencoded(x.nodedata[:-33])
                         #print("tx proper:")
@@ -1274,18 +1314,16 @@ def REQUEST_LOOP():
                             if txid in accounts[acc]['wanted_tx']:
                                 break
 
+
                             seq = tx['Sequence']
-                            if int(tohex(txid[0:2]), 16) % 20 == 0 or \
-                            int(tohex(txid[0:2]), 16) % 20 == 1 or \
-                            int(tohex(txid[0:2]), 16) % 20 == 2:
+                            if int(tohex(txid[0:2]), 16) % 20 == 0:
                                 print("dropping tx " + tohex(txid) + " for testing, seq=" + str(seq))
                                 continue 
 
                             if 'Destination' in tx and accounts[acc]['raw'] == tx['Destination']:
-                                seq = 0xFFFFFFFF
+                                seq = -1
 
                             accounts[acc]['wanted_tx'][txid] = {
-                                "acc_seq_no": tx['Sequence'],
                                 "ledger_seq_no_at_discovery": last_ledger_seq_no,
                                 "max_ledger_seq_no": tx['LastLedgerSequence'],
                                 "aggression": 3
@@ -1427,6 +1465,13 @@ for raccount in argv:
         "raw": raccount, 
         "asroot_key": asroot_key, #asroot
         "wanted_tx": {}, # txid->seqno
+        "tx_chain": {}, # next txid -> previous tx
+        "tx_ledger_seq": {}, #txid -> ledgerseq
+        "tx_first": None,
+        "tx_first_fsi": 0xffffffffffffffff, #first seen index is a 64bit number comprising ledgerSeq << 32 + transaction seq within that ledger
+        "tx_last": None, #most recent tx affecting this account that we've received metadata for
+        "tx_last_lsi": 0, #last seen index is a 64bit number comprising ledgerSeq << 32 + transaction seq within that ledger
+        "tx_chain_valid_to": None, # the txid the chain has been checked for continuity
         "dropped_tx": [] #txid
     }
     if not os.path.exists(acc):
@@ -1435,10 +1480,7 @@ for raccount in argv:
     if not os.path.exists(acc + '/tx'):
         os.mkdir(acc + '/tx')
 
-    if not os.path.exists(acc + '/txseq.txt'):
-        IntervalSet().save(acc + '/txseq.txt')
 
-    accounts[acc]['txseq'] = IntervalSet(acc + '/txseq.txt')
 
 
 # build UNL from the validator site specified, if any
