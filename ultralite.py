@@ -10,7 +10,7 @@ UNL = [] #we'll populate from the below if specified
 validator_site = "https://vl.ripple.com"
 peer_file = "peers.txt"
 
-PEER_CON_LIMIT = 2
+PEER_CON_LIMIT = 1#3
 
 import traceback
 from interval import IntervalSet
@@ -21,6 +21,7 @@ from socket import *
 import select
 from stlookup import *
 import base64
+import ssl
 import urllib.request
 import pprint
 import ripple_pb2
@@ -1175,6 +1176,36 @@ def REQUEST_LOOP():
                                 print("REMOVED :" + tohex(txid) + " FOUND IN LEDGER " + str(message.ledgerSeq) + " ORIGINAL ESTIMATE:" + str(accounts[acc]['wanted_tx'][txid]['ledger_seq_no_at_discovery'] ))
                                 affected_accounts.add(acc)
                                 del accounts[acc]['wanted_tx'][txid]
+                                vl = parse_vlencoded(x.nodedata[:-33])
+                                print("meta:")
+                                md = parse_stobject(vl[1], False)
+
+                                if 'AffectedNodes' in md and 'ModifiedNode' in md['AffectedNodes']:
+                                    modified = md['AffectedNodes']['ModifiedNode']
+                                    if type(modified) != list:
+                                        modified = [modified]
+
+                                    for n in modified:
+                                        #print(node['FinalFields'])
+                                        if 'PreviousTxnID' in n and \
+                                        'PreviousTxnLgrSeq' in n and \
+                                        'FinalFields' in n and \
+                                        'PreviousFields' in n and \
+                                        'Account' in n['FinalFields'] and \
+                                        'Sequence' in n['PreviousFields'] and \
+                                        n['FinalFields']['Account'] == accounts[acc]['raw']:
+                                            seq = n['PreviousFields']['Sequence'] - 1
+                                            if not accounts[acc]['txseq'].contains(seq) and not n['PreviousTxnID'] in accounts[acc]['wanted_tx']:
+                                                accounts[acc]['wanted_tx'][n['PreviousTxnID']] = {
+                                                    "acc_seq_no": seq,
+                                                    "ledger_seq_no_at_discovery": n['PreviousTxnLgrSeq'],
+                                                    "max_ledger_seq_no": n['PreviousTxnLgrSeq'],
+                                                    "aggression": 4
+                                                } 
+                                                print("Adding missing TXID to wanted:" + encode_xrpl_address(n['FinalFields']['Account']) + " prev txid " + \
+                                                tohex(n['PreviousTxnID']) + " ldgseq=" + str(n['PreviousTxnLgrSeq']) + " accseq=" + \
+                                                str(n['PreviousFields']['Sequence']))
+
                     
                     for acc in affected_accounts:
                         print(acc + ": " + str(accounts[acc]['txseq']))
@@ -1244,6 +1275,12 @@ def REQUEST_LOOP():
                                 break
 
                             seq = tx['Sequence']
+                            if int(tohex(txid[0:2]), 16) % 20 == 0 or \
+                            int(tohex(txid[0:2]), 16) % 20 == 1 or \
+                            int(tohex(txid[0:2]), 16) % 20 == 2:
+                                print("dropping tx " + tohex(txid) + " for testing, seq=" + str(seq))
+                                continue 
+
                             if 'Destination' in tx and accounts[acc]['raw'] == tx['Destination']:
                                 seq = 0xFFFFFFFF
 
@@ -1406,7 +1443,8 @@ for raccount in argv:
 
 # build UNL from the validator site specified, if any
 if type(validator_site) == str and len(validator_site) > 0:
-    vl = urllib.request.urlopen(validator_site).read().decode('utf-8')
+    context = ssl._create_unverified_context()
+    vl = urllib.request.urlopen(validator_site,  context=context).read().decode('utf-8')
     vl = json.loads(vl)
     if vl['public_key'].upper() != 'ED2677ABFFD1B33AC6FBC3062B71F1E8397C1505E1C42C64D11AD1B28FF73F4734':
         print("attempted to fetch validator list from " + validator_site + " but found unknown list signing key!")
