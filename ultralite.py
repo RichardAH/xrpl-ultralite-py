@@ -282,9 +282,9 @@ class xrpl_ultralite:
             "got_base_data" :  False,
             "accounts": {}
         }
-        for acc in accounts:
+        for acc in self.accounts:
             ret['accounts'][acc] = { 
-                "asroot_key" : accounts[acc]['asroot_key'],
+                "asroot_key" : self.accounts[acc]['asroot_key'],
                 "account_depth": False,
                 "account_key": False,
                 "account_path_nodes": {}, #these are the inner nodes that lead down to the account, including root, indexed by depth
@@ -296,6 +296,8 @@ class xrpl_ultralite:
         return ret
 
     def verify_as_nodes(self, state):
+
+        print(state)
 
         for acc in state['accounts']:
             astate = state['accounts'][acc]
@@ -440,7 +442,7 @@ class xrpl_ultralite:
                     if type(txid) == bytes:
                         txid = to_hex(txid)
 
-                    print("requesting " + txid + " from ledger " + str(ledger_seq_no))
+                    #print("requesting " + txid + " from ledger " + str(ledger_seq_no))
                     for l in range(1, depth, 1):
                         v = hex(l)[2:]
                         key = txid[0:l] + ('0' * (66 - l - len(v))) + v
@@ -664,7 +666,7 @@ class xrpl_ultralite:
                 if fd in partial:
                     partial[fd]['message_upto'] += len(raw_packet)
                     partial[fd]['message'].append(raw_packet)
-                    print("waiting for more data to complete message... " + str(partial[fd]['message_upto']) + "/" + str(partial[fd]['message_size']))
+                    #print("waiting for more data to complete message... " + str(partial[fd]['message_upto']) + "/" + str(partial[fd]['message_size']))
                     if partial[fd]['message_upto'] < partial[fd]['message_size']:
                         continue
             
@@ -683,7 +685,7 @@ class xrpl_ultralite:
                         "message_upto": len(raw_packet) - 6,
                         "message": [raw_packet]
                     }
-                    print("waiting for more data to complete messag on fd="+str(fd)+"e... " + str(partial[fd]['message_upto']) + "/" + str(partial[fd]['message_size']))
+                    #print("waiting for more data to complete messag on fd="+str(fd)+"e... " + str(partial[fd]['message_upto']) + "/" + str(partial[fd]['message_size']))
                     continue
 
                 #parse the message itself
@@ -710,38 +712,8 @@ class xrpl_ultralite:
 
                     msg_ledger_hash = to_hex(message.ledgerHash)
 
-                    if not msg_ledger_hash in self.request_state and not message.type == ripple_pb2.TMLedgerInfoType.liTX_NODE:
-                        print("1 we were sent a ledger base we didn't ask for " + to_hex(msg_ledger_hash))
-                        continue
-                    
-                    state = {}
-                    if msg_ledger_hash in state:
-                        state = self.request_state[msg_ledger_hash]
 
-                    if message.type == ripple_pb2.TMLedgerInfoType.liBASE:
-                        print("liBASE received")
-                        nodeid = 0
-
-                        for x in message.nodes:
-                            print("BASE NODE " + str(nodeid))
-
-                            ledger_hash = x.nodedata[-42:-10] # NB: this could change? we should parse this properly
-
-                            if nodeid == 0: #can calculate ledger hash from this node
-                                state["calculated_ledger_hash"] = SHA512H(b'LWR\x00' + x.nodedata)
-                                state["reported_account_root_hash"] = x.nodedata[-42:-10] # NB: this could change? we should parse this properly
-                                state['got_base_data'] = True
-                            elif nodeid == 1:
-                                state["calculated_account_root_hash"] = process_as_node(msg_ledger_hash, x, from_hex('0' * 66))
-
-                            #print(to_hex(x.nodedata))
-                            nodeid += 1
-
-                        if self.verify_as_nodes(state):
-                            print("as node request finished")
-                            self.fetch_acc_txs(state)
-
-                    elif message.type == ripple_pb2.TMLedgerInfoType.liTX_NODE:
+                    if message.type == ripple_pb2.TMLedgerInfoType.liTX_NODE:
                         #print("MTLEDGER NODE COUNT = " + str(len(message.nodes)))
                         affected_accounts = set()
                         for x in message.nodes:
@@ -833,10 +805,11 @@ class xrpl_ultralite:
                                             else:
                                                 print("MISSING txid " + acc + " txid " + to_hex(tx) + " but no idea which ledger to look in")
                                         else:
-                                            if not tx in account['tx_ledger_seq']:
-                                                print("missing tx " + acc + " txid " + to_hex(tx) + " ldgseq=??? range= " + str(account['wanted_tx'][tx]['ledger_seq_no_at_discovery']) + " - " + str(account['wanted_tx'][tx]['max_ledger_seq']))  
-                                            else:
-                                                print("missing tx " + acc + " txid " + to_hex(tx) + " ldgseq=" + str(account['tx_ledger_seq'][tx]) + " already in wanted_tx")
+                                            pass
+                                            #if not tx in account['tx_ledger_seq']:
+                                            #    print("missing tx " + acc + " txid " + to_hex(tx) + " ldgseq=??? range= " + str(account['wanted_tx'][tx]['ledger_seq_no_at_discovery']) + " - " + str(account['wanted_tx'][tx]['max_ledger_seq']))  
+                                            #else:
+                                            #    print("missing tx " + acc + " txid " + to_hex(tx) + " ldgseq=" + str(account['tx_ledger_seq'][tx]) + " already in wanted_tx")
 
                                 print("missing transactions: >=" + str(missing) + " out of " + str(len(account['tx_chain'])))     
 
@@ -859,15 +832,48 @@ class xrpl_ultralite:
                             
                             #for y in parse_vlencoded(x.nodedata[:-33]):
                             #    parse_stobject(y, True) 
+                    else:
 
 
-                    elif message.type == ripple_pb2.TMLedgerInfoType.liAS_NODE:
-                        print("liAS_NODE")
-                        for x in message.nodes:
-                            process_as_node(msg_ledger_hash, x)
+                        if not message.ledgerHash in self.request_state and not message.type == ripple_pb2.TMLedgerInfoType.liTX_NODE:
+                            print("1 we were sent a ledger base we didn't ask for " + msg_ledger_hash)
+                            before_continue()
+                            continue
+                        state = self.request_state[message.ledgerHash]
 
-                        if verify_as_nodes(state):
-                            fetch_acc_txs(state)
+                        if message.type == ripple_pb2.TMLedgerInfoType.liBASE:
+                            print("liBASE received")
+                            nodeid = 0
+
+                            if len(message.nodes) > 0:
+                                x = message.nodes[0]
+
+                                print("BASE NODE " + str(nodeid))
+
+                                ledger_hash = x.nodedata[-42:-10] # NB: this could change? we should parse this properly
+
+                                if nodeid == 0: #can calculate ledger hash from this node
+                                    state["calculated_ledger_hash"] = SHA512H(b'LWR\x00' + x.nodedata)
+                                    state["reported_account_root_hash"] = x.nodedata[-42:-10] # NB: this could change? we should parse this properly
+                                    state['got_base_data'] = True
+                                elif nodeid == 1:
+                                    state["calculated_account_root_hash"] = self.process_as_node(ledger_hash, x, from_hex('0' * 66))
+
+                                #print(to_hex(x.nodedata))
+                                nodeid += 1
+
+                            if self.verify_as_nodes(state):
+                                print("as node request finished")
+                                self.fetch_acc_txs(state)
+
+
+                        elif message.type == ripple_pb2.TMLedgerInfoType.liAS_NODE:
+                            print("liAS_NODE")
+                            for x in message.nodes:
+                                self.process_as_node(ledger_hash, x)
+
+                            #if self.verify_as_nodes(state):
+                            #    self.fetch_acc_txs(state)
                             print("as node request finished")
 
                 if message_type == 42: #GetObjectByHash
@@ -982,9 +988,12 @@ class xrpl_ultralite:
                     print("mtVALIDATION ... " + str(len(validations[ledger_hash])) + "/" + str(len(self.config['UNL'])) + " UNL peers have validated - ledger = " + str(ledger_seq))
                     self.request_wanted_tx()
 
-                    continue
+                    #every 5 ledgers we will request the AS_ROOT
+                    if ledger_seq % 5 > 0:
+                        continue
             
                     print("requesting ledger " + str(ledger_seq) + " hash = " + to_hex(ledger_hash)) 
+                    print(str(ledger_hash))
                     # first request the base ledger info
                     gl = ripple_pb2.TMGetLedger()
                     gl.ledgerHash = ledger_hash
@@ -993,13 +1002,14 @@ class xrpl_ultralite:
                     gl.itype = ripple_pb2.TMLedgerInfoType.liBASE
                     self.send_rand_peer(encode_peer_message('mtGetLedger', gl))
                     
-                    state = new_state()
+                    state = self.new_state()
                     self.request_state[ledger_hash] = state
+
 
                     state['requested_ledger_hash'] = ledger_hash    
 
                     for acc in self.accounts:
-                        account = accounts[acc]
+                        account = self.accounts[acc]
                         requested_node = account['asroot_key']
 
                         print('requesting node: ' + requested_node)
