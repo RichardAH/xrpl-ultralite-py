@@ -47,6 +47,13 @@ config = {
 
 class xrpl_ultralite:
 
+    ledger_chain = {} # ledger_hash -> { prev_ledger_hash: , seq_no: , account_root: , tx_root: }
+    ledger_seq = {} # ledger_seqno -> ledger_hash
+
+    wanted_ledgers = {} # wanted ledger seq no -> ledger hash or False
+    tx_waiting_on_ledgers = {} # wanted ledger seq -> [ ... tx hash ]
+    
+
     accounts = {}
     peers = set()
     connections = {}
@@ -273,13 +280,17 @@ class xrpl_ultralite:
         return connection
 
 
-    def new_state(self):
+    def new_state(self, ledger_seq):
         ret = {
             "requested_ledger_hash": False,
             "calculated_ledger_hash": False,
             "reported_account_root_hash": False,
             "calculated_account_root_hash": False,
+            "reported_tx_root_hash": False,
+            "calculated_tx_root_hash": False,
+            "previous_ledger_hash": False,
             "got_base_data" :  False,
+            "ledger_seq": ledger_seq,
             "accounts": {}
         }
         for acc in self.accounts:
@@ -296,8 +307,6 @@ class xrpl_ultralite:
         return ret
 
     def verify_as_nodes(self, state):
-
-        print(state)
 
         for acc in state['accounts']:
             astate = state['accounts'][acc]
@@ -346,6 +355,69 @@ class xrpl_ultralite:
             print("all proven correct")
         return len(state['accounts']) == proven_correct_count
 
+
+
+    def process_tx_node(self, txid, acc, ledgerSeq, nodedata, proof):
+
+        if acc in self.accounts and 'wanted_tx' in self.accounts[acc] and txid in self.accounts[acc]['wanted_tx']:
+            del self.accounts[acc]['wanted_tx'][txid]
+
+        vl = parse_vlencoded(nodedata[:-33])
+        md = parse_stobject(vl[1], False)
+
+        if 'AffectedNodes' in md and 'ModifiedNode' in md['AffectedNodes']:
+            modified = md['AffectedNodes']['ModifiedNode']
+            if type(modified) != list:
+                modified = [modified]
+
+            found_node = False
+            for n in modified:
+                #print(node['FinalFields'])
+                if not 'PreviousTxnID' in n or \
+                not 'PreviousTxnLgrSeq' in n or \
+                not 'FinalFields' in n or \
+                not 'Account' in n['FinalFields'] or \
+                not n['FinalFields']['Account'] == self.accounts[acc]['raw']:
+                    continue
+
+                f = open(acc + "/tx/" + to_hex(txid), "w+")
+                f.write(str(to_hex(n['PreviousTxnID'])) + "\n")
+                f.write(str(proof) + "\n")
+                f.write( str(md))
+                
+                f.close()
+
+                found_node = True
+                lastseenindex = (ledgerSeq << 32) + md['TransactionIndex']
+                
+                account = self.accounts[acc]
+
+                account['tx_ledger_seq'][n['PreviousTxnID']] = n['PreviousTxnLgrSeq']
+                account['tx_chain'][txid] = n['PreviousTxnID']
+               
+                if account['tx_first_fsi'] < lastseenindex:
+                    account['tx_first'] = txid                                            
+                    account['tx_first_fsi'] = lastseenindex
+    
+                if lastseenindex > account['tx_last_lsi']:
+                    account['tx_last'] =  txid
+                    account['tx_last_lsi'] = lastseenindex
+
+                if not n['PreviousTxnID'] in account['tx_chain'] and\
+                not n['PreviousTxnID'] in account['wanted_tx']:
+                    account['wanted_tx'][n['PreviousTxnID']] = {
+                        "ledger_seq_no_at_discovery": n['PreviousTxnLgrSeq'],
+                        "max_ledger_seq_no": n['PreviousTxnLgrSeq'],
+                        "aggression": 4,
+                        "dont_drop": True
+                    }
+                    print("Adding missing TXID to wanted:" + encode_xrpl_address(n['FinalFields']['Account']) + " prev txid " + \
+                    to_hex(n['PreviousTxnID']) + " ldgseq=" + str(n['PreviousTxnLgrSeq']))
+                    if not n['PreviousTxnLgrSeq'] in self.ledger_seq:
+                        print("Adding missing ledger: " + str(n['PreviousTxnLgrSeq']))
+                        self.wanted_ledgers[n['PreviousTxnLgrSeq']] = False
+            if not found_node:
+                print("skipping tx with missing PreviousTxnID/PreviousTxnLgrSeq " + to_hex(txid))
 
     def process_as_node(self, ledger_hash, x, nodeid = False):
 
@@ -712,12 +784,11 @@ class xrpl_ultralite:
 
                     msg_ledger_hash = to_hex(message.ledgerHash)
 
-
                     if message.type == ripple_pb2.TMLedgerInfoType.liTX_NODE:
                         #print("MTLEDGER NODE COUNT = " + str(len(message.nodes)))
-                        affected_accounts = set()
+                        print(x)
                         for x in message.nodes:
-                            #print("TX NODEID: " + to_hex(x.nodeid))
+                            print("TX NODEID: " + to_hex(x.nodeid))
                             if not x.nodedata[-1] == 4:
                                 continue
             
@@ -732,61 +803,29 @@ class xrpl_ultralite:
 
                                     #print(message)
                                     print("REMOVED :" + to_hex(txid) + " FOUND IN LEDGER " + str(message.ledgerSeq) + " ORIGINAL ESTIMATE:" + str(self.accounts[acc]['wanted_tx'][txid]['ledger_seq_no_at_discovery'] ))
+
+
+                                    #rather inefficient way to gather the nodes we need to prove the metadata is true and correct
+                                    proof_nodes = {}
+                                    requested_node = to_hex(txid)
+                                    for l in range(1, len(requested_node)):
+                                        v = hex(l)[2:]
+                                        key = from_hex(requested_node[0:l] + ('0' * (66 - l - len(v))) + v)
+                                        for y in message.nodes:
+                                            if y.nodeid == key:
+                                                proof_nodes[key] = decompress_node(y.nodedata)
                                     
-                                    affected_accounts.add(acc)
-                                    del self.accounts[acc]['wanted_tx'][txid]
-                                    vl = parse_vlencoded(x.nodedata[:-33])
-                                    print("meta:")
-                                    md = parse_stobject(vl[1], False)
+                                    if not message.ledgerHash in self.ledger_chain:
+                                        print("transaction was not part of a ledger we know of adding wanted ledger " + to_hex(message.ledgerHash))
+                                        self.wanted_ledgers[message.ledgerSeq] = message.ledgerHash
+                                        if not message.ledgerSeq in self.tx_waiting_on_ledgers:
+                                            self.tx_waiting_on_ledgers[message.ledgerSeq] = { txid: { "proof": proof_nodes, "nodedata": x.nodedata, 'acc': acc } }
+                                        else:
+                                            self.tx_waiting_on_ledgers[message.ledgerSeq][txid] = { "proof": proof_nodes, "nodedata": x.nodedata, 'acc': acc }
+                                        before_continue()
+                                        continue
 
-                                    if 'AffectedNodes' in md and 'ModifiedNode' in md['AffectedNodes']:
-                                        modified = md['AffectedNodes']['ModifiedNode']
-                                        if type(modified) != list:
-                                            modified = [modified]
-                            
-                                        found_node = False
-                                        for n in modified:
-                                            #print(node['FinalFields'])
-                                            if not 'PreviousTxnID' in n or \
-                                            not 'PreviousTxnLgrSeq' in n or \
-                                            not 'FinalFields' in n or \
-                                            not 'Account' in n['FinalFields'] or \
-                                            not n['FinalFields']['Account'] == self.accounts[acc]['raw']:
-                                                continue
-
-                                            f = open(acc + "/tx/" + to_hex(txid), "w+")
-                                            f.write(str(to_hex(n['PreviousTxnID'])) + "\n" + str(md))
-                                            f.close()
-
-                                            found_node = True
-                                            lastseenindex = (message.ledgerSeq << 32) + md['TransactionIndex']
-                                            
-                                            account = self.accounts[acc]
-
-                                            account['tx_ledger_seq'][n['PreviousTxnID']] = n['PreviousTxnLgrSeq']
-                                            account['tx_chain'][txid] = n['PreviousTxnID']
-                                           
-                                            if account['tx_first_fsi'] < lastseenindex:
-                                                account['tx_first'] = txid                                            
-                                                account['tx_first_fsi'] = lastseenindex
-                                
-                                            if lastseenindex > account['tx_last_lsi']:
-                                                account['tx_last'] =  txid
-                                                account['tx_last_lsi'] = lastseenindex
-
-                                            if not n['PreviousTxnID'] in account['tx_chain'] and\
-                                            not n['PreviousTxnID'] in account['wanted_tx']:
-                                                account['wanted_tx'][n['PreviousTxnID']] = {
-                                                    "ledger_seq_no_at_discovery": n['PreviousTxnLgrSeq'],
-                                                    "max_ledger_seq_no": n['PreviousTxnLgrSeq'],
-                                                    "aggression": 4,
-                                                    "dont_drop": True
-                                                } 
-                                                print("Adding missing TXID to wanted:" + encode_xrpl_address(n['FinalFields']['Account']) + " prev txid " + \
-                                                to_hex(n['PreviousTxnID']) + " ldgseq=" + str(n['PreviousTxnLgrSeq']))
-                                        if not found_node:
-                                            print("skipping tx with missing PreviousTxnID/PreviousTxnLgrSeq " + to_hex(txid))
-                        
+                                    self.process_tx_node(txid, acc, message.ledgerSeq, x.nodedata, proof_nodes)
 
                                 missing = 0
                                 for tx in account['tx_chain']:
@@ -842,25 +881,70 @@ class xrpl_ultralite:
                         state = self.request_state[message.ledgerHash]
 
                         if message.type == ripple_pb2.TMLedgerInfoType.liBASE:
-                            print("liBASE received")
+
+                            if not message.ledgerSeq in self.wanted_ledgers:
+                                print("peer attempted to send ledger info we didn't ask for seq=" + str(message.ledgerSeq) + ", hash=" + to_hex(message.ledgerHash))
+                            
+                            print("REMOVED LEDGER: seq=" + str(message.ledgerSeq) + " hash=" + to_hex(message.ledgerHash))
+                            del self.wanted_ledgers[message.ledgerSeq]
+                            
+ 
+                            if message.ledgerSeq in self.tx_waiting_on_ledgers:
+                                for txid in self.tx_waiting_on_ledgers[message.ledgerSeq]:
+                                    print("RECEIVED " + to_hex(message.ledgerHash) + " now PROCESSING " + to_hex(txid) + " !!")
+                                    tx = self.tx_waiting_on_ledgers[message.ledgerSeq][txid]
+                                    self.process_tx_node(txid, tx['acc'], message.ledgerSeq, tx['nodedata'], tx['proof'])
+                                del self.tx_waiting_on_ledgers[message.ledgerSeq]
+                                
+
+                            #todo: verify ledger hash # ledger_hash -> { prev_ledger_hash: , seq_no: , account_root: , tx_root: }
+
+                            self.ledger_chain[message.ledgerHash] = {
+                                "ledger_seq_no": message.ledgerSeq,
+                                "prev_ledger_hash": message.nodes[0].nodedata[12:44]
+                            }
+
+
+                            self.ledger_seq[message.ledgerSeq] = message.ledgerHash
+
+                            p = self.ledger_chain[message.ledgerHash]['prev_ledger_hash']
+                            print("previous hash: " + to_hex(p))
+                            
+                            while p:
+                                if p in self.ledger_chain:
+                                    print("prev: " + to_hex(p))
+                                    p = self.ledger_chain[p]['prev_ledger_hash']
+                                else:
+                                    print("((done))")
+                                    break
+
                             nodeid = 0
-
                             if len(message.nodes) > 0:
-                                x = message.nodes[0]
+                                for x in message.nodes:
+                                    print("BASE NODE " + str(nodeid))
 
-                                print("BASE NODE " + str(nodeid))
+                                    if nodeid == 0: #can calculate ledger hash from this node
 
-                                ledger_hash = x.nodedata[-42:-10] # NB: this could change? we should parse this properly
+                                        state["calculated_ledger_hash"] = SHA512H(b'LWR\x00' + x.nodedata)
+                                        state["reported_account_root_hash"] = x.nodedata[-42:-10] # NB: this could change? we should parse this properly
+                                        state["reported_tx_root_hash"] = x.nodedata[44:76]
+                                        print("tx root? " + to_hex(state["reported_tx_root_hash"]))
 
-                                if nodeid == 0: #can calculate ledger hash from this node
-                                    state["calculated_ledger_hash"] = SHA512H(b'LWR\x00' + x.nodedata)
-                                    state["reported_account_root_hash"] = x.nodedata[-42:-10] # NB: this could change? we should parse this properly
-                                    state['got_base_data'] = True
-                                elif nodeid == 1:
-                                    state["calculated_account_root_hash"] = self.process_as_node(ledger_hash, x, from_hex('0' * 66))
+                                        state['got_base_data'] = True
+                                    elif nodeid == 1:
+                                        #account root
+                                        state["calculated_account_root_hash"] = self.process_as_node(message.ledgerHash, x, from_hex('0' * 66))
 
-                                #print(to_hex(x.nodedata))
-                                nodeid += 1
+                                        self.ledger_chain[message.ledgerHash]['account_root'] = state["calculated_account_root_hash"]
+                            
+                                    elif nodeid == 2:
+                                        x.nodedata = decompress_node(x.nodedata)
+                                        state["calculated_tx_root_hash"] = SHA512H(b"MIN\x00" + x.nodedata[:-1])
+                                        
+                                        self.ledger_chain[message.ledgerHash]['tx_root'] = state["calculated_tx_root_hash"]
+                                        #tx root
+
+                                    nodeid += 1
 
                             if self.verify_as_nodes(state):
                                 print("as node request finished")
@@ -983,32 +1067,50 @@ class xrpl_ultralite:
                     if self.last_ledger_seq_no >= ledger_seq:
                         continue
 
+
                     self.last_ledger_seq_no = ledger_seq
                 
                     print("mtVALIDATION ... " + str(len(validations[ledger_hash])) + "/" + str(len(self.config['UNL'])) + " UNL peers have validated - ledger = " + str(ledger_seq))
                     self.request_wanted_tx()
 
-                    #every 5 ledgers we will request the AS_ROOT
-                    if ledger_seq % 5 > 0:
-                        continue
+                    #prune old state entries
+                    to_delete = set()
+                    for h in self.request_state:
+                        if self.request_state[h]['ledger_seq'] < ledger_seq - 5:
+                            to_delete.add(h)
+                    for h in to_delete:
+                        del self.request_state[h]
+
+
+
             
                     print("requesting ledger " + str(ledger_seq) + " hash = " + to_hex(ledger_hash)) 
                     print(str(ledger_hash))
-                    # first request the base ledger info
-                    gl = ripple_pb2.TMGetLedger()
-                    gl.ledgerHash = ledger_hash
-                    gl.ledgerSeq = ledger_seq
-                    gl.queryDepth = 1
-                    gl.itype = ripple_pb2.TMLedgerInfoType.liBASE
-                    self.send_rand_peer(encode_peer_message('mtGetLedger', gl))
-                    
-                    state = self.new_state()
-                    self.request_state[ledger_hash] = state
+                    self.wanted_ledgers[ledger_seq] = ledger_hash
 
+                    for ls in self.wanted_ledgers:
+                        # first request the base ledger info
+                        gl = ripple_pb2.TMGetLedger()
+                        if ls in self.wanted_ledgers and self.wanted_ledgers[ls] != False:
+                            gl.ledgerHash = self.wanted_ledgers[ls]
+                        gl.ledgerSeq = ls 
+                        gl.queryDepth = 1
+                        gl.itype = ripple_pb2.TMLedgerInfoType.liBASE
+                        self.send_rand_peer(encode_peer_message('mtGetLedger', gl))
+                        print("REQUESTING LEDGER seq: " + str(ls))
+                    
+                    state = self.new_state(ledger_seq)
+                    self.request_state[ledger_hash] = state
 
                     state['requested_ledger_hash'] = ledger_hash    
 
+                    # request AS_ROOT every 5 ledgers
+                    if not ledger_seq % 5 == 0:
+                        before_continue()
+                        continue
+
                     for acc in self.accounts:
+
                         account = self.accounts[acc]
                         requested_node = account['asroot_key']
 
