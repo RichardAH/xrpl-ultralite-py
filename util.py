@@ -474,6 +474,33 @@ def decompress_node(nodedata):
     reconstructed_node += b'\x02'
     return reconstructed_node
 
+# https://github.com/ripple/rippled/blob/fccb7e1c70549d2cf47800f9942171fb681b5648/src/ripple/app/ledger/Ledger.cpp#L65
+#        std::uint32_t(info.seq),                                               4
+#        std::uint64_t(info.drops.drops ()),                                    8
+#        info.parentHash,                                                      32
+#        info.txHash,                                                          32
+#        info.accountHash,                                                     32
+#        std::uint32_t(info.parentCloseTime.time_since_epoch().count()),        4
+#        std::uint32_t(info.closeTime.time_since_epoch().count()),              4
+#        std::uint8_t(info.closeTimeResolution.count()),                        1
+#        std::uint8_t(info.closeFlags));                                        1
+def parse_ledger_root(d):
+
+    if len(d) != 118:
+        return False
+
+    return {
+        "ledgerSeq": (d[0] << 24) + (d[1] << 16) + (d[2] << 8) + d[3],
+        "drops":  (d[4] << 56) + (d[5] << 48) + (d[6] << 40) + (d[7] << 32) + (d[8] << 24) + (d[9] << 16) + (d[10] << 8) + d[11],
+        "parentHash": d[12:44],
+        "txHash": d[44:76],
+        "accountHash": d[76:108],
+        "parentCloseTime": (d[108] << 24) + (d[109] << 16) + (d[110] << 8) + d[111],
+        "closeTime": (d[112] << 24) + (d[113] << 16) + (d[114] << 8) + d[115],
+        "closeTimeResolution": d[116],
+        "closeFlags": d[117]
+    }
+    
 
 
 #this helper function will test each of the possible branches of an inner node against a searched for hash
