@@ -49,6 +49,10 @@ class xrpl_ultralite:
 
     ledger_chain = {} # ledger_hash -> { prev_ledger_hash: , seq_no: , account_root: , tx_root: , root: }
     ledger_seq = {} # ledger_seqno -> ledger_hash
+    last_ledger_seq_verified = False # contains the head of the verified ledger chain
+    first_ledger_seq_verified = False # contains the fail of the verified ledger chain
+    last_ledger_hash_verified = False # contains the head of the verified ledger chain
+    first_ledger_hash_verified = False # contains the fail of the verified ledger chain
 
     wanted_ledgers = {} # wanted ledger seq no -> ledger hash or False
     tx_waiting_on_ledgers = {} # wanted ledger seq -> txid -> { "proof": proof_nodes, "nodedata": x.nodedata, 'acc': acc } 
@@ -62,8 +66,8 @@ class xrpl_ultralite:
     peers = set()
     connections = {}
 
-    last_ledger_seq_no = -1
-    last_ledger_hash = False
+    last_ledger_seq_seen = -1
+    last_ledger_hash_seen = False
 
 
     node_sk = ""
@@ -292,18 +296,37 @@ class xrpl_ultralite:
 
     def check_ledger_chain(self, ledgerSeq, ledgerHash):
         # before we process, we need to ensure there is a complete chain from lcl back to the ledger
-        # this tx appeared in
+        # this tx appeared in   
 
-        if not self.last_ledger_hash or not self.last_ledger_hash in self.ledger_chain:
-            if self.last_ledger_hash in self.ledgers_waiting_on_ledgers:
-                self.ledgers_waiting_on_ledgers[self.last_ledger_hash].add(ledgerHash)
-            else:
-                self.ledgers_waiting_on_ledgers[self.last_ledger_hash] = set(ledgerHash)
+        if self.last_ledger_hash_verified == False:
+            print("can't check ledger chain until some ledgers have been received")
             return False
 
-        p = self.ledger_chain[self.last_ledger_hash]['prev_ledger_hash']
+        if ledgerSeq > self.last_ledger_seq_verified:
+            print("can't check ledger chain because trying to check newer ledger "+str(ledgerSeq)+" than newest in chain " + str(self.last_ledger_seq_verified))
+            return False
+        
+        if ledgerSeq < self.first_ledger_seq_verified:
+            print("can't check ledger chain because trying to check older ledger "+str(ledgerSeq)+" than oldest in chain " + str(self.last_ledger_seq_verified))
+            return False
+
+        ledger_is_missing = False
+        for ls in range(self.first_ledger_seq_verified, self.last_ledger_seq_verified, 1):
+            if not ls in self.ledger_seq:
+                if not ls in sf.wanted_ledgers:
+                    print("added " + str(ls) + " to wanted ledgers list")
+                    sf.wanted_ledgers[ls] = False
+                    if ledgerSeq == ls:
+                        ledger_is_missing = True
+
+        if ledger_is_missing:
+            print("can't check ledger chain because ledger we're checking against " + str(ledgerSeq) + " is missing")
+            return False
+    
+        # execution to here means nominally we have all the ledgers we need to make the check, so now check hashes
+
+        p = self.ledger_chain[self.last_ledger_hash_verified]['prev_ledger_hash']
         while p in self.ledger_chain:
-            print(to_hex(p))
             if p == ledgerHash:
                 break
             p = self.ledger_chain[p]['prev_ledger_hash']
@@ -313,6 +336,7 @@ class xrpl_ultralite:
                 self.ledgers_waiting_on_ledgers[p].add(ledgerHash)
             else:
                 self.ledgers_waiting_on_ledgers[p] = set(ledgerHash)
+            print("check ledger chain failed " + to_hex(p) + " != " + to_hex(ledgerHash))
             return False
 
         return True
@@ -489,7 +513,7 @@ class xrpl_ultralite:
                 seq_tx_map[n].append((t[2], t[3]))       
 
         for ledger_seq_no in seq_tx_map:
-            if ledger_seq_no > self.last_ledger_seq_no:
+            if ledger_seq_no > self.last_ledger_seq_seen:
                 continue
             
             lentosend = len(seq_tx_map[ledger_seq_no])
@@ -573,13 +597,13 @@ class xrpl_ultralite:
                 if self.accounts[acc]['wanted_tx'][txid]['aggression'] == 3:
                     minseq += 1
                     maxseq = minseq + 1 
-                #if maxseq < last_ledger_seq_no and maxseq + 5 > last_ledger_seq_no :
-                if maxseq + 20 < self.last_ledger_seq_no and not 'dont_drop' in self.accounts[acc]['wanted_tx'][txid]:
+                #if maxseq < last_ledger_seq_seen and maxseq + 5 > last_ledger_seq_seen :
+                if maxseq + 20 < self.last_ledger_seq_seen and not 'dont_drop' in self.accounts[acc]['wanted_tx'][txid]:
                     tx_drop.append(txid)       
-                elif minseq <= self.last_ledger_seq_no :
+                elif minseq <= self.last_ledger_seq_seen :
                     tx_set.append( (minseq, maxseq, txid, 12 ) ) #accounts[acc]['wanted_tx'][txid]['aggression']) )
                     
-                    if self.last_ledger_seq_no - self.accounts[acc]['wanted_tx'][txid]['ledger_seq_no_at_discovery'] > 2:
+                    if self.last_ledger_seq_seen - self.accounts[acc]['wanted_tx'][txid]['ledger_seq_no_at_discovery'] > 2:
                         self.accounts[acc]['wanted_tx'][txid]['aggression'] += 1
                         if self.accounts[acc]['wanted_tx'][txid]['aggression'] > 8:
                             self.accounts[acc]['wanted_tx'][txid]['aggression'] = 8
@@ -869,11 +893,20 @@ class xrpl_ultralite:
                             "prev_ledger_hash": message.nodes[0].nodedata[12:44]
                         }
                         self.ledger_seq[message.ledgerSeq] = message.ledgerHash
-                        #record these hashes and the root node verification for use later
+                        # record these hashes and the root node verification for use later
                         self.ledger_chain[message.ledgerHash]['root'] = message.nodes[0]
                         self.ledger_chain[message.ledgerHash]['ac_root'] = cal_ac_root_hash
                         self.ledger_chain[message.ledgerHash]['tx_root'] = cal_tx_root_hash
                     
+                        # update head and tail records when appropriate 
+                        if self.last_ledger_seq_verified == False or message.ledgerSeq > self.last_ledger_seq_verified:
+                            self.last_ledger_seq_verified = message.ledgerSeq
+                            self.last_ledger_hash_verified = message.ledgerHash
+
+                        if self.first_ledger_seq_verified == False or message.ledgerSeq < self.first_ledger_seq_verified:
+                            self.first_ledger_seq_verified = message.ledgerSeq
+                            self.first_ledger_hash_verified = message.ledgerHash
+
                         #print("REMOVED LEDGER: seq=" + str(message.ledgerSeq) + " hash=" + to_hex(message.ledgerHash))
 
                         # remove the ledger from our wanted list
@@ -987,7 +1020,7 @@ class xrpl_ultralite:
 
                 if message_type == 30: #Transaction
                     #wait for at least one validation before we start wanting tx
-                    if self.last_ledger_seq_no == -1:
+                    if self.last_ledger_seq_seen == -1:
                         continue
 
                     
@@ -1026,11 +1059,11 @@ class xrpl_ultralite:
                                     seq = -1
 
                                 account['wanted_tx'][txid] = {
-                                    "ledger_seq_no_at_discovery": self.last_ledger_seq_no,
+                                    "ledger_seq_no_at_discovery": self.last_ledger_seq_seen,
                                     "max_ledger_seq_no": tx['LastLedgerSequence'],
                                     "aggression": 3
                                 }
-                                #print('TX: ' + encode_xrpl_address(tx['Account']) + "[W"+str(len(account['wanted_tx']))+" D"+str(len(account['dropped_tx']))+"]" + ", " + str(tx['Sequence']) + " {" + str(self.last_ledger_seq_no) + "}  " + to_hex(txid))
+                                #print('TX: ' + encode_xrpl_address(tx['Account']) + "[W"+str(len(account['wanted_tx']))+" D"+str(len(account['dropped_tx']))+"]" + ", " + str(tx['Sequence']) + " {" + str(self.last_ledger_seq_seen) + "}  " + to_hex(txid))
                                 break
             
                 if message_type == 15: #(mtEndpoints)
@@ -1083,12 +1116,12 @@ class xrpl_ultralite:
                     #time.sleep(4) #ensure everyone has the ledger on file
 
 
-                    if self.last_ledger_seq_no >= ledger_seq:
+                    if self.last_ledger_seq_seen >= ledger_seq:
                         continue
 
 
-                    self.last_ledger_seq_no = ledger_seq
-                    self.last_ledger_hash = ledger_hash
+                    self.last_ledger_seq_seen = ledger_seq
+                    self.last_ledger_hash_seen = ledger_hash
                 
                     print("mtVALIDATION ... " + str(len(validations[ledger_hash])) + "/" + str(len(self.config['UNL'])) + " UNL peers have validated - ledger = " + str(ledger_seq))
                     self.request_wanted_tx()
@@ -1130,8 +1163,7 @@ class xrpl_ultralite:
                         print('requesting node: ' + requested_node)
                         # now request the account state info
                         gl = ripple_pb2.TMGetLedger()
-                        gl.ledgerHash = ledger_hash
-                        gl.ledgerSeq = ledger_seq
+                        gl.ledgerSeq = self.last_ledger_seq_verified
                         gl.itype = ripple_pb2.TMLedgerInfoType.liAS_NODE
                        
                         for l in range(1, len(requested_node)):
