@@ -463,11 +463,17 @@ class xrpl_ultralite:
             found_node = False
             for n in modified:
                 #print(node['FinalFields'])
-                if not 'PreviousTxnID' in n or \
-                not 'PreviousTxnLgrSeq' in n or \
-                not 'FinalFields' in n or \
-                not 'Account' in n['FinalFields'] or \
-                not n['FinalFields']['Account'] == to_hex(self.accounts[acc]['raw']):
+                if not 'PreviousTxnID' in n or not 'PreviousTxnLgrSeq' in n or  not 'FinalFields' in n:
+                    continue
+
+                relevant = False
+                for x in n['FinalFields']:
+                    if n['FinalFields'][x] == acc:
+                        relevant = True
+                        break
+
+                if not relevant:
+                    print(n['FinalFields'])#['Account'] + " != " + to_hex(self.accounts[acc]['raw']))
                     continue
 
                 ptxid = from_hex(n['PreviousTxnID'])

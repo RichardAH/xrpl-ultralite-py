@@ -423,7 +423,11 @@ def parse_stobject(x, print_out = False, hex_encoded_bin_fields = False):
 
                 issuer = x[upto+28:upto+48]
 
-                add_entry(sto, fieldname, {"currency": curcode,  "value": amount, "issuer": issuer})
+                entry = {"Currency": curcode,  "Value": amount, "Issuer": issuer}
+                if hex_encoded_bin_fields:
+                    entry['Issuer'] = encode_xrpl_address(issuer)
+                
+                add_entry(sto, fieldname, entry)
                 
                 if print_out:
                     print (curcode + ": " + str(amount) + " [Issuer:" + encode_xrpl_address(issuer) + "]")
@@ -448,7 +452,10 @@ def parse_stobject(x, print_out = False, hex_encoded_bin_fields = False):
                         print( to_hex(x[upto:upto+size]))
 
                 if hex_encoded_bin_fields:
-                    add_entry(sto, fieldname, to_hex(x[upto:upto+size]))
+                    if typecode == 8:
+                        add_entry(sto, fieldname, encode_xrpl_address(x[upto:upto+size]))
+                    else:
+                        add_entry(sto, fieldname, to_hex(x[upto:upto+size]))
                 else:
                     add_entry(sto, fieldname, x[upto:upto+size])
 
