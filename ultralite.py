@@ -110,7 +110,7 @@ class xrpl_ultralite:
             vl = urllib.request.urlopen(config['validator_site'],  context=context).read().decode('utf-8')
             vl = json.loads(vl)
             if vl['public_key'].upper() != 'ED2677ABFFD1B33AC6FBC3062B71F1E8397C1505E1C42C64D11AD1B28FF73F4734':
-                print("attempted to fetch validator list from " + self.config['validator_site'] + " but found unknown list signing key!")
+                print("INF VL: Attempted to fetch validator list from " + self.config['validator_site'] + " but found unknown list signing key!")
                 exit(1)
             #todo: check validator list signature here
 
@@ -118,16 +118,16 @@ class xrpl_ultralite:
             st = base64.b64decode(payload['validators'][0]['manifest'])
             for v in payload['validators']:
                 #todo: check signatures of each validator here
-                sto = parse_stobject(base64.b64decode(v['manifest']))
+                sto = parse_stobject(base64.b64decode(v['manifest']), False, False)
                 self.config['UNL'].append(sto['SigningPubKey']) 
 
-            print("Loaded a UNL from validator site " + self.config['validator_site'] + " consisting of " + str(len(self.config['UNL'])) + " validators")
+            print("INF VL: Loaded a UNL from validator site " + self.config['validator_site'] + " consisting of " + str(len(self.config['UNL'])) + " validators")
         
         argv = sys.argv[1:]
         
         # process commandline
         if len(argv) == 0:
-            print("usage: " + sys.argv[0] + " rSomeAccountToWatch rSomeOtherAccountToWatch ...")
+            print("XRPL UL Usage: " + sys.argv[0] + " rSomeAccountToWatch rSomeOtherAccountToWatch ...")
             quit()
 
         binprefix = b'\x00a'
@@ -174,7 +174,7 @@ class xrpl_ultralite:
 
     def connect(self, server):
         server = server.replace("\r", "").replace("\n", "")       
-        print("Attempting to connect to " + server + ", connections=" + str(len(self.connections)) )
+        print("TRY CX: " + server + " | EXISTING CONNECTIONS=" + str(len(self.connections)) )
         
         parts = server.split(":")
         port = 51235
@@ -258,10 +258,11 @@ class xrpl_ultralite:
                         return False 
       
             else:
-                print("Failed to connected, received:")
-                print(packet)
+                #print("Failed to connected, received:")
+                #print(packet)
+                pass
            
-            print("failed") 
+            #print("failed") 
             return False
 
         #there's some interesting info in this header
@@ -277,16 +278,16 @@ class xrpl_ultralite:
                 ph = fh.split(": ") 
                 if ph[0] == "Server":
                     server_version = ph[1]
-                    print("node version: " + server_version) 
+                    #print("node version: " + server_version) 
                 elif ph[0] == "Public-Key":
                     server_key = ph[1]
-                    print("node key: " + server_key)
+                    #print("node key: " + server_key)
                 elif ph[0] == "Closed-Ledger":
                     server_closed_ledger = ph[1]
-                    print("last closed ledger: " + server_closed_ledger)
+                    #print("last closed ledger: " + server_closed_ledger)
                 elif ph[0] == "Crawl":
                     server_private = ph[1] == "private" 
-                    print("server is " + ("private" if server_private else "public"))
+                    #print("server is " + ("private" if server_private else "public"))
 
         #NB: execution to this point means the connection was successful
         return connection
@@ -299,28 +300,28 @@ class xrpl_ultralite:
         # this tx appeared in   
 
         if self.last_ledger_hash_verified == False:
-            print("can't check ledger chain until some ledgers have been received")
+            #print("can't check ledger chain until some ledgers have been received")
             return False
 
         if ledgerSeq > self.last_ledger_seq_verified:
-            print("can't check ledger chain because trying to check newer ledger "+str(ledgerSeq)+" than newest in chain " + str(self.last_ledger_seq_verified))
+            print("INF LG: can't check ledger chain because trying to check newer ledger "+str(ledgerSeq)+" than newest in chain " + str(self.last_ledger_seq_verified))
             return False
         
         if ledgerSeq < self.first_ledger_seq_verified:
-            print("can't check ledger chain because trying to check older ledger "+str(ledgerSeq)+" than oldest in chain " + str(self.last_ledger_seq_verified))
+            print("INF LG: can't check ledger chain because trying to check older ledger "+str(ledgerSeq)+" than oldest in chain " + str(self.last_ledger_seq_verified))
             return False
 
         ledger_is_missing = False
         for ls in range(self.first_ledger_seq_verified, self.last_ledger_seq_verified, 1):
             if not ls in self.ledger_seq:
-                if not ls in sf.wanted_ledgers:
-                    print("added " + str(ls) + " to wanted ledgers list")
+                if not ls in self.wanted_ledgers:
+                    #print("added " + str(ls) + " to wanted ledgers list")
                     sf.wanted_ledgers[ls] = False
                     if ledgerSeq == ls:
                         ledger_is_missing = True
 
         if ledger_is_missing:
-            print("can't check ledger chain because ledger we're checking against " + str(ledgerSeq) + " is missing")
+            print("INF LG: can't check ledger chain because ledger we're checking against " + str(ledgerSeq) + " is missing")
             return False
     
         # execution to here means nominally we have all the ledgers we need to make the check, so now check hashes
@@ -336,7 +337,7 @@ class xrpl_ultralite:
                 self.ledgers_waiting_on_ledgers[p].add(ledgerHash)
             else:
                 self.ledgers_waiting_on_ledgers[p] = set(ledgerHash)
-            print("check ledger chain failed " + to_hex(p) + " != " + to_hex(ledgerHash))
+        #    print("check ledger chain failed " + to_hex(p) + " != " + to_hex(ledgerHash))
             return False
 
         return True
@@ -352,19 +353,19 @@ class xrpl_ultralite:
                 computed_hash = SHA512H(inner_prefix + proof[i][:-1])
 
             if not node_contains(proof[i-1], computed_hash):
-                print("!$!$ "+str(inner_prefix, 'utf-8')+" inner node at depth " + str(i) + "/" + str(len(proof)-1) + " computed hash " + to_hex(computed_hash) + " wasn't found in the node above")
-                print("TXNODE at "+str(i-1)+": " + to_hex(proof[i-1]))
+                print("ERR TX: "+str(inner_prefix, 'utf-8')+" inner node at depth " + str(i) + "/" + str(len(proof)-1) + " computed hash " + to_hex(computed_hash) + " wasn't found in the node above")
+                print("ERR TX: node at "+str(i-1)+": " + to_hex(proof[i-1]))
                 return False
 
         return True
 
     def process_as_node(self, acc, ledgerSeq, ledgerHash, nodedata, proof):
 
-        print("process_as_node: " + acc + " lgr=" + str(ledgerSeq) + ", " + str(ledgerSeq) + ", " + to_hex(ledgerHash))
+        #print("process_as_node: " + acc + " lgr=" + str(ledgerSeq) + ", " + str(ledgerSeq) + ", " + to_hex(ledgerHash))
 
         # first make sure we're not waiting on other ledgers 
         if not self.check_ledger_chain(ledgerSeq, ledgerHash):
-            print("process_as_node is waiting on ledgers")
+            #print("process_as_node is waiting on ledgers")
             if not ledgerSeq in self.ac_waiting_on_ledgers:
                 self.ac_waiting_on_ledgers[ledgerSeq] = {}
             self.ac_waiting_on_ledgers[ledgerSeq][acc] = { "proof": proof, "nodedata": nodedata }
@@ -374,10 +375,10 @@ class xrpl_ultralite:
 
         # the next thing we need to check is top to bottom hashes, i.e. the node proof
         if not self.verify_node_proof(proof, b'MIN\x00', b'MLN\x00'):
-            print("process_as_node failed proof check")
+            print("ERR AS: process_as_node failed proof check")
             return False
 
-        print("process_as_node verified proof")
+        #print("process_as_node verified proof")
                 
         # nodes are correct to the tx_root. since the ledger has also been checked before this function is called 
         # we are now in a state where this transaction is verified to be on-ledger as it appears here, so we can record it
@@ -391,20 +392,20 @@ class xrpl_ultralite:
                 del self.ac_waiting_on_ledgers[ledgerSeq]
 
 
-        sto = parse_stobject(nodedata[:-33], False)
+        sto = parse_stobject(nodedata[:-33], False, False)
 
         if not sto:
-            print("verified account state for " + acc + " but unable to read sto")
+            print("ERR AS: verified account state for " + acc + " but unable to read sto")
             return False
 
-        print("verified account root: " + acc + " prevtxid=" + to_hex(sto['PreviousTxnID']))
+        #print("verified account root: " + acc + " prevtxid=" + to_hex(sto['PreviousTxnID']))
         self.add_wanted_tx(sto['PreviousTxnID'], acc, sto['PreviousTxnLgrSeq'])
         return True    
         
 
     def add_wanted_tx(self, txid, acc, ledgerSeq):
         if not acc in self.accounts:
-            print("Warning: Tried to add wanted tx to account we don't have in our accounts list")
+            print("ERR TX: Tried to add wanted tx to account we don't have in our accounts list")
             return False
 
         account = self.accounts[acc]
@@ -424,6 +425,8 @@ class xrpl_ultralite:
 
 
     def process_tx_node(self, txid, acc, ledgerSeq, ledgerHash, nodedata, proof):
+
+        #print("process_tx_node")
 
         # first make sure we're not waiting on other ledgers 
         if not self.check_ledger_chain(ledgerSeq, ledgerHash):
@@ -450,7 +453,7 @@ class xrpl_ultralite:
         
 
         vl = parse_vlencoded(nodedata[:-33])
-        md = parse_stobject(vl[1], False)
+        md = parse_stobject(vl[1], False, True)
 
         if 'AffectedNodes' in md and 'ModifiedNode' in md['AffectedNodes']:
             modified = md['AffectedNodes']['ModifiedNode']
@@ -464,12 +467,13 @@ class xrpl_ultralite:
                 not 'PreviousTxnLgrSeq' in n or \
                 not 'FinalFields' in n or \
                 not 'Account' in n['FinalFields'] or \
-                not n['FinalFields']['Account'] == self.accounts[acc]['raw']:
+                not n['FinalFields']['Account'] == to_hex(self.accounts[acc]['raw']):
                     continue
 
+                ptxid = from_hex(n['PreviousTxnID'])
+                ptxseq = n['PreviousTxnLgrSeq']
+
                 f = open(acc + "/tx/" + to_hex(txid), "w+")
-                f.write(str(to_hex(n['PreviousTxnID'])) + "\n")
-                f.write(str(proof) + "\n")
                 f.write( str(md))
                 
                 f.close()
@@ -479,8 +483,8 @@ class xrpl_ultralite:
                 
                 account = self.accounts[acc]
 
-                account['tx_ledger_seq'][n['PreviousTxnID']] = n['PreviousTxnLgrSeq']
-                account['tx_chain'][txid] = n['PreviousTxnID']
+                account['tx_ledger_seq'][ptxid] = ptxseq
+                account['tx_chain'][txid] = ptxid
                
                 if account['tx_first_fsi'] < lastseenindex:
                     account['tx_first'] = txid                                            
@@ -490,10 +494,10 @@ class xrpl_ultralite:
                     account['tx_last'] =  txid
                     account['tx_last_lsi'] = lastseenindex
 
-                self.add_wanted_tx(n['PreviousTxnID'], acc, n['PreviousTxnLgrSeq'])
+                self.add_wanted_tx(ptxid, acc, ptxseq)
 
             if not found_node:
-                print("skipping tx with missing PreviousTxnID/PreviousTxnLgrSeq " + to_hex(txid))
+                print("ERR TX: skipping tx with missing PreviousTxnID/PreviousTxnLgrSeq " + to_hex(txid))
                 return False
 
         return True
@@ -571,7 +575,7 @@ class xrpl_ultralite:
         except:
             if connection in self.connections:
                 del self.connections[connection]  
-            print("send to connection fd=" + str(connection.fileno()) + " failed, removing connection")
+            print("ERR CX: send to connection fd=" + str(connection.fileno()) + " failed, removing connection")
             return False        
 
     def send_rand_peer(self, x, exclude = []):
@@ -613,7 +617,7 @@ class xrpl_ultralite:
 
         for txid in tx_drop:
             for acc in self.accounts:
-                print("DROPPED " + to_hex(txid) + " ledger_added: " + str(self.accounts[acc]['wanted_tx'][txid]['ledger_seq_no_at_discovery']) + " max: " + str(self.accounts[acc]['wanted_tx'][txid]['max_ledger_seq_no']))
+                print("ERR TX: Dropped " + to_hex(txid) + " ledger_added: " + str(self.accounts[acc]['wanted_tx'][txid]['ledger_seq_no_at_discovery']) + " max: " + str(self.accounts[acc]['wanted_tx'][txid]['max_ledger_seq_no']))
                 self.accounts[acc]['dropped_tx'].append(txid)
                 del self.accounts[acc]['wanted_tx'][txid]
 
@@ -631,10 +635,10 @@ class xrpl_ultralite:
                 }
                 return True    
             else:
-                print("connection failed")
+                pass
+                #print("connection failed")
         except Exception as e:
-            print("987")
-            print(e)
+            #print("EXCEPT: " + str(e))
             pass
         return False
 
@@ -658,7 +662,7 @@ class xrpl_ultralite:
                     if self.connections[con]['requests'] > 50:
                         health = self.connections[con]['responses'] / self.connections[con]['requests']
                         if health < 0.2:
-                            print("fd " + str(con.fileno()) + " health = " + str(self.connections[con]['responses'] / self.connections[con]['requests']) + " req: " + str(self.connections[con]['requests']) + " resp: " + str(self.connections[con]['responses'])  )
+                            #print("fd " + str(con.fileno()) + " health = " + str(self.connections[con]['responses'] / self.connections[con]['requests']) + " req: " + str(self.connections[con]['requests']) + " resp: " + str(self.connections[con]['responses'])  )
                             del self.connections[con]
                             break
                 #catch anything that shouldn't be in there
@@ -684,13 +688,13 @@ class xrpl_ultralite:
                     if con.fileno() < 0:
                         to_dump.append(con)
                 for con in to_dump:
-                    print("DUMPING connection due to negative fd")
+                    print("ERR CX: DUMPING connection due to negative fd")
                     del self.connections[con]
                 before_continue()
                 continue
 
             for connection in exceptional:
-                print("!!!!!!!Exceptional status on fd = " + str(self.connection.fileno()))
+                #print("!!!!!!!Exceptional status on fd = " + str(self.connection.fileno()))
                 if connection in self.connections:
                     del self.connections[connection]
                 before_continue()
@@ -761,7 +765,7 @@ class xrpl_ultralite:
                 message = parse_peer_message(message_type, raw_packet[6:message_size+6])
 
                 if not message:
-                    print("WARNING unreadable message")
+                    print("ERR CX: WARNING unreadable message")
                     continue
 
                 #check for pings and respond with a pong
@@ -790,7 +794,7 @@ class xrpl_ultralite:
                             for acc in self.accounts:
                                 if txid in self.accounts[acc]['wanted_tx']:
 
-                                    #print("REMOVED :" + to_hex(txid) + " FOUND IN LEDGER " + str(message.ledgerSeq) + " ORIGINAL ESTIMATE:" + str(self.accounts[acc]['wanted_tx'][txid]['ledger_seq_no_at_discovery'] ))
+                                    print("GOT TX: " + to_hex(txid))# + " FOUND IN LEDGER " + str(message.ledgerSeq) + " ORIGINAL ESTIMATE:" + str(self.accounts[acc]['wanted_tx'][txid]['ledger_seq_no_at_discovery'] ))
 
                                     #rather inefficient way to gather the nodes we need to prove the metadata is true and correct
                                     proof_nodes = []
@@ -831,13 +835,13 @@ class xrpl_ultralite:
                                                     "aggression": 4,
                                                     "dont_drop": True
                                                 }
-                                                print("Adding missing TXID to wanted:" + acc + " txid " + \
-                                                to_hex(tx) + " ldgseq=" + str(account['tx_ledger_seq'][tx]))
-                                            else:
-                                                print("MISSING txid " + acc + " txid " + to_hex(tx) + " but no idea which ledger to look in")
+                                                #print("Adding missing TXID to wanted:" + acc + " txid " + \
+                                                #to_hex(tx) + " ldgseq=" + str(account['tx_ledger_seq'][tx]))
+                                            #else:
+                                            #    print("MISSING txid " + acc + " txid " + to_hex(tx) + " but no idea which ledger to look in")
 
-                                if (missing > 0):
-                                    msg = "missing transactions: >=" + str(missing) + " out of " + str(len(account['tx_chain']))
+                                if missing > 2:
+                                    msg = "INF TX: missing >=" + str(missing) + " out of " + str(len(account['tx_chain']))
                                     if msg != self.last_missing_msg:
                                         print(msg)
                                         self.last_missing_msg = msg
@@ -846,20 +850,20 @@ class xrpl_ultralite:
                             
                         # first check if we even asked for this ledger
                         if not message.ledgerSeq in self.wanted_ledgers and not message.ledgerHash in self.ledgers_waiting_on_ledgers:
-                            print("peer attempted to send ledger info we didn't ask for seq=" + str(message.ledgerSeq) + ", hash=" + to_hex(message.ledgerHash))
+                            print("ERR CX: peer attempted to send ledger info we didn't ask for seq=" + str(message.ledgerSeq) + ", hash=" + to_hex(message.ledgerHash))
                             before_continue()
                             continue
                 
                         # next check if its a valid base message
                         if len(message.nodes) <= 0:
-                            print("1 invalid liBASE with no nodes")
+                            print("ERR CX: invalid liBASE with no nodes")
                             before_continue()
                             continue
 
                         # now check if the top level hash is correct
                         computed_ledger_hash =  SHA512H(b'LWR\x00' +  message.nodes[0].nodedata)
                         if message.ledgerHash != SHA512H(b'LWR\x00' +  message.nodes[0].nodedata):
-                            print("2 invalid ilBASE node, stated hash was: " + to_hex(message.ledgerHash) + " but comuted hash was: " + to_hex(computed_ledger_hash))
+                            print("ERR CX: invalid ilBASE node, stated hash was: " + to_hex(message.ledgerHash) + " but comuted hash was: " + to_hex(computed_ledger_hash))
                             before_continue()
                             continue
 
@@ -877,12 +881,12 @@ class xrpl_ultralite:
                         rep_tx_root_hash = lr['txHash']
                         
                         if cal_ac_root_hash != rep_ac_root_hash:
-                            print("3 invalid ilBASE node: calculated and reported acc root hash don't match: c=" + to_hex(cal_ac_root_hash) + " r=" + to_hex(rep_ac_root_hash))
+                            print("ERR CX: invalid ilBASE node: calculated and reported acc root hash don't match: c=" + to_hex(cal_ac_root_hash) + " r=" + to_hex(rep_ac_root_hash))
                             before_continue()
                             continue
 
                         if cal_tx_root_hash != rep_tx_root_hash:
-                            print("4 invalid ilBASE node: calculated and reported tx root hash don't match: c=" + to_hex(cal_tx_root_hash) + " r=" + to_hex(rep_tx_root_hash))
+                            print("ERR CX: invalid ilBASE node: calculated and reported tx root hash don't match: c=" + to_hex(cal_tx_root_hash) + " r=" + to_hex(rep_tx_root_hash))
                             before_continue()
                             continue
 
@@ -920,7 +924,7 @@ class xrpl_ultralite:
                             if ledgerSeq in self.tx_waiting_on_ledgers:
                                 to_process = []
                                 for txid in self.tx_waiting_on_ledgers[ledgerSeq]:
-                                    print("RECEIVED " + to_hex(ledgerHash) + " now PROCESSING " + to_hex(txid) + " !!")
+                                    print("GOT TX: " + to_hex(txid))
                                     tx = self.tx_waiting_on_ledgers[ledgerSeq][txid]
                                     proof = [self.ledger_chain[ledgerHash]['tx_root'], * self.tx_waiting_on_ledgers[ledgerSeq][txid]['proof']]
                                     to_process.append( (txid, tx['acc'], ledgerSeq, ledgerHash, tx['nodedata'], proof) )
@@ -931,7 +935,7 @@ class xrpl_ultralite:
                             if ledgerSeq in self.ac_waiting_on_ledgers:
                                 to_process = []
                                 for acc in self.ac_waiting_on_ledgers[ledgerSeq]:
-                                    print("RECEIVED " + to_hex(ledgerHash) + " now PROCESSING acc_root: " + acc + " !!")
+                                    print("GOT LG: " + to_hex(ledgerHash))# + " now PROCESSING acc_root: " + acc + " !!")
                                     ac = self.ac_waiting_on_ledgers[ledgerSeq][acc]
                                     proof = [self.ledger_chain[ledgerHash]['ac_root'], * self.ac_waiting_on_ledgers[ledgerSeq][acc]['proof']]
                                     to_process.append( (acc, ledgerSeq, ledgerHash, ac['nodedata'], proof) )
@@ -944,7 +948,7 @@ class xrpl_ultralite:
                         if message.ledgerHash in self.ledgers_waiting_on_ledgers:
                             waiting_set = self.ledgers_waiting_on_ledgers[message.ledgerHash]
                             # reprocess all waiting tx in all ledgers in waiting set
-                            print("RECIVED LWOL: " + to_hex(message.ledgerHash))
+                            print("GOT LG: " + to_hex(message.ledgerHash))
                             for lh in waiting_set:
                                 if lh in self.ledger_seq:
                                     reprocess_waiting(self.ledger_seq[lh], lh)
@@ -954,7 +958,7 @@ class xrpl_ultralite:
 
 
                     elif message.type == ripple_pb2.TMLedgerInfoType.liAS_NODE:
-                        print("liAS_NODE")
+                        #print("liAS_NODE")
 
                         # the AS_NODE might have lots of entries for lots of account's we're interested in,
                         # so first do a preliminary loop to find out which accounts this AS_NODE contains
@@ -976,7 +980,7 @@ class xrpl_ultralite:
 
                         # if this packet contains nothing of interest move on
                         if len(proof_needed) == 0:
-                            print("AS_NODE received but contained no accounts we are watching")
+                            print("ERR CX: AS_NODE received but contained no accounts we are watching")
                             before_continue()
                             continue
                         
@@ -996,7 +1000,7 @@ class xrpl_ultralite:
                          # the ledger base was retreived
 
                         if not message.ledgerHash in self.ledger_chain:
-                            print("account state was not part of a ledger we know of adding wanted ledger " + to_hex(message.ledgerHash))
+                            print("ERR CX: account state was not part of a ledger we know of adding wanted ledger " + to_hex(message.ledgerHash))
                             self.wanted_ledgers[message.ledgerSeq] = message.ledgerHash
                             if not message.ledgerSeq in self.ac_waiting_on_ledgers:
                                 self.ac_waiting_on_ledgers[message.ledgerSeq] = {}
@@ -1037,7 +1041,7 @@ class xrpl_ultralite:
                     if not found:
                         continue
 
-                    tx = parse_stobject(message.rawTransaction, False)
+                    tx = parse_stobject(message.rawTransaction, False, False)
                      
                     if tx:
                         for acc in self.accounts:
@@ -1048,7 +1052,6 @@ class xrpl_ultralite:
                                 txid = SHA512HP(b'TXN\x00', message.rawTransaction)
                                 if txid in self.accounts[acc]['wanted_tx']:
                                     break
-
 
                                 seq = tx['Sequence']
                                 #if int(to_hex(txid[0:2]), 16) % 20 == 0:
@@ -1063,7 +1066,8 @@ class xrpl_ultralite:
                                     "max_ledger_seq_no": tx['LastLedgerSequence'],
                                     "aggression": 3
                                 }
-                                #print('TX: ' + encode_xrpl_address(tx['Account']) + "[W"+str(len(account['wanted_tx']))+" D"+str(len(account['dropped_tx']))+"]" + ", " + str(tx['Sequence']) + " {" + str(self.last_ledger_seq_seen) + "}  " + to_hex(txid))
+                                print('ASK TX: ' + to_hex(txid))
+# + "[W"+str(len(account['wanted_tx']))+" D"+str(len(account['dropped_tx']))+"]" + ", " + str(tx['Sequence']) + " {" + str(self.last_ledger_seq_seen) + "}  " + to_hex(txid))
                                 break
             
                 if message_type == 15: #(mtEndpoints)
@@ -1078,7 +1082,7 @@ class xrpl_ultralite:
                 
                 if message_type == 41: #(mtVALIDATION)
                     #todo check if validations are from our selected UNL
-                    sto = parse_stobject(message.validation, False)#True)
+                    sto = parse_stobject(message.validation, False, False)#True)
 
                     ledger_hash = sto['LedgerHash']
                     ledger_seq = sto['LedgerSequence'] # int(message.validation.hex()[12:20], 16) #todo change this to pull from sto
@@ -1123,10 +1127,10 @@ class xrpl_ultralite:
                     self.last_ledger_seq_seen = ledger_seq
                     self.last_ledger_hash_seen = ledger_hash
                 
-                    print("mtVALIDATION ... " + str(len(validations[ledger_hash])) + "/" + str(len(self.config['UNL'])) + " UNL peers have validated - ledger = " + str(ledger_seq))
+                    #print("mtVALIDATION ... " + str(len(validations[ledger_hash])) + "/" + str(len(self.config['UNL'])) + " UNL peers have validated - ledger = " + str(ledger_seq))
                     self.request_wanted_tx()
 
-                    print("requesting ledger " + str(ledger_seq) + " hash = " + to_hex(ledger_hash)) 
+                    print("ASK LG: " + to_hex(ledger_hash)) 
                     self.wanted_ledgers[ledger_seq] = ledger_hash
 
                     already_requested = set()
@@ -1139,7 +1143,7 @@ class xrpl_ultralite:
                         gl.queryDepth = 1
                         gl.itype = ripple_pb2.TMLedgerInfoType.liBASE
                         self.send_rand_peer(encode_peer_message('mtGetLedger', gl))
-                        print("REQUESTING LEDGER seq: " + str(ls))
+                        print("ASK LG: SEQ=" + str(ls))
                     
                     for lh in self.ledgers_waiting_on_ledgers:
                         if not lh in already_requested:
@@ -1148,7 +1152,7 @@ class xrpl_ultralite:
                             gl.queryDepth = 1
                             gl.itype = ripple_pb2.TMLedgerInfoType.liBASE
                             self.send_rand_peer(encode_peer_message('mtGetLedger', gl))
-                            print("REQUESTING LWOL hash: " + to_hex(lh))
+                            print("ASK LG: " + to_hex(lh))
 
                     # request AS_ROOT every 5 ledgers
                     if not ledger_seq % 5 == 0:
@@ -1160,7 +1164,7 @@ class xrpl_ultralite:
                         account = self.accounts[acc]
                         requested_node = account['asroot_key']
 
-                        print('requesting node: ' + requested_node)
+                        print('ASK AS: ' + requested_node)
                         # now request the account state info
                         gl = ripple_pb2.TMGetLedger()
                         gl.ledgerSeq = self.last_ledger_seq_verified

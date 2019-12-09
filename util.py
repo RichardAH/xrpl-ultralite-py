@@ -257,7 +257,7 @@ def parse_vlencoded(x):
         upto += size
     return ret
 
-def parse_stobject(x, print_out = False):
+def parse_stobject(x, print_out = False, hex_encoded_bin_fields = False):
 
     def add_entry(sto, fieldname, entry):
         if fieldname in sto and not type(sto[fieldname]) == list:
@@ -447,7 +447,10 @@ def parse_stobject(x, print_out = False):
                     else:
                         print( to_hex(x[upto:upto+size]))
 
-                add_entry(sto, fieldname, x[upto:upto+size])
+                if hex_encoded_bin_fields:
+                    add_entry(sto, fieldname, to_hex(x[upto:upto+size]))
+                else:
+                    add_entry(sto, fieldname, x[upto:upto+size])
 
             upto += size
 
