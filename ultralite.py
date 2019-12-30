@@ -1,5 +1,6 @@
 # XRPL UltraLite
 #   Author: Richard Holland
+# Todo: remove bad peers after X failed connections
 
 import traceback
 from datetime import datetime
@@ -112,18 +113,19 @@ class xrpl_ultralite:
         x = None
         y = None
 
-        if os.path.exists(self.config['peer_file']):
-            f = open(self.config['peer_file'], "r+")
-            if f:
-                content = f.readlines()
-                f.close()
-                for ip in content:
-                    self.peers.add(ip)
-           
+        f = open(self.config['peer_file'], "r+")
+        if f:
+            content = f.readlines()
+            f.close()
+            for ip in content:
+                self.peers.add(ip)
+        else:
+            dprint("[ERR FS] Could not open peer file for reading and writing " + self.config['peer_file'])
+
         self.peers.add(config['bootstrap_server'])
-        
+ 
         # build UNL from the validator site specified, if any
-        if (len(self.config['UNL']) > 0):
+        if len(self.config['UNL']) > 0:
             for x in self.config['UNL']:
                 if len(x) != 33 or type(x) != bytes:
                     dprint("[ERR VL] Invalid UNL specified, keys should be 33 bytes and of type bytes")
@@ -135,9 +137,24 @@ class xrpl_ultralite:
             if vl['public_key'].upper() != 'ED2677ABFFD1B33AC6FBC3062B71F1E8397C1505E1C42C64D11AD1B28FF73F4734':
                 dprint("[INF VL] Attempted to fetch validator list from " + self.config['validator_site'] + " but found unknown list signing key!")
                 exit(1)
+
+            if 'signature' in vl and 'public_key' in vl and 'blob' in vl and 'manifest' in vl or len(vl['public_key']) != 33 or lower(vl['public_key'][0:2]) != 'ed':
+                pass
+            else:
+                dprint("[ERR VL] Validator list site returned invalid format", True)
+                quit()
+
+
             #todo: check validator list signature here
 
-            payload = json.loads(base64.b64decode(vl['blob']))
+            payload = base64.b64decode(vl['blob'])
+#            manifest = base64.b64decode(vl['manifest'])
+#            signature = from_hex(vl['signature'])
+            #verify_key = nacl.signing.VerifyKey(vl['public_key'][2:], encoder=nacl.encoding.HexEncoder)
+            #print("verification: " + str(bytes(verify_key.verify(vl['blob'], 'utf-8'), from_hex(vl['signature']))))#, encoder=nacl.encoding.HexEncoder)))
+            
+        
+            payload = json.loads(payload)
             st = base64.b64decode(payload['validators'][0]['manifest'])
             for v in payload['validators']:
                 #todo: check signatures of each validator here
@@ -193,7 +210,14 @@ class xrpl_ultralite:
             if not os.path.exists(acc + '/tx'):
                 os.mkdir(acc + '/tx')
 
-
+    def write_peer_file(self):
+        f = open(self.config['peer_file'], "w")
+        if f:
+            for ip in self.peers:
+                f.write(ip)
+            f.close()
+        else:
+            dprint("[ERR FS] Could not open peer file for writing " + self.config['peer_file'])
 
     def connect(self, server):
         server = server.replace("\r", "").replace("\n", "")       
@@ -278,7 +302,11 @@ class xrpl_ultralite:
                     if re.match(r'^([0-9]{1,3}\.){3}[0-9]{1,3}:[0-9]{2,5}$', x):
                         if not x in self.peers:
                             self.peers.add(x)
-                        return False 
+                        return False
+
+                if len(peer_ips) > 0:
+                    if self.config['allow_write_to_peer_file']:
+                        self.write_peer_file()
       
             else:
                 #dprint("Failed to connected, received:")
@@ -1104,13 +1132,18 @@ class xrpl_ultralite:
             
                 if message_type == 15: #(mtEndpoints)
                     #dprint('mtEndpoints')
-                    new_ips = set()
+                    added = False
                     for endpoint in message.endpoints_v2:
                         ip = endpoint.endpoint.replace('[::', '').replace('ffff:', '').replace(']', '')
                         if re.match(r'^([0-9]{1,3}\.){3}[0-9]{1,3}:[0-9]{2,5}$', ip) != None:
                             if not ip in self.peers:
                                 self.peers.add(ip)
-                                new_ips.add(ip)
+                                added = True
+
+                    if added:
+                        if self.config['allow_write_to_peer_file']:
+                            self.write_peer_file()
+    
                 
                 if message_type == 41: #(mtVALIDATION)
                     #todo check if validations are from our selected UNL
@@ -1140,18 +1173,9 @@ class xrpl_ultralite:
                         validations[ledger_hash][signing_key] = ledger_seq
                    
 
-                    #dprint(to_hex(message.validation))
-
-                    #dprint( "PK in UNL? " + str( (signing_key in UNL) ) )
-
                     if len(validations[ledger_hash]) < len(self.config['UNL']) * 0.8:
                         continue
                     
-
-                    # execution to here indicates the ledger is validated and we want to make our request now
-                    #time.sleep(4) #ensure everyone has the ledger on file
-
-
                     if self.last_ledger_seq_seen >= ledger_seq:
                         continue
 
@@ -1161,7 +1185,6 @@ class xrpl_ultralite:
                 
                     dprint("[VAL LG] Validated ledger " +  str(ledger_seq) + " received", True)
 
-                    #dprint("mtVALIDATION ... " + str(len(validations[ledger_hash])) + "/" + str(len(self.config['UNL'])) + " UNL peers have validated - ledger = " + str(ledger_seq))
                     self.request_wanted_tx()
 
                     dprint("[ASK LG] " + to_hex(ledger_hash)) 
