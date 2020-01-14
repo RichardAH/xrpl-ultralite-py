@@ -1,9 +1,35 @@
 # XRPL UltraLite
 #   Author: Richard Holland
 # Todo: remove bad peers after X failed connections
+config = {
+    #---stuff you will want to configure is immediately below
+    "connection_limit": 2, # maximum number of simulatenous peer connections to maintain
+    "allow_write_to_peer_file": True, # you most likely want to change this to false if you run on an embedded device
+    "write_to_stdout": False, # if True metadata will be written on stdout
+    "write_to_file": True, # if True metadata will be written to ./<raccount>/tx/<txid> 
+    #--- you probably don't want to change anything under this point
+    "DEBUG": True,
+    "bootstrap_server": "s1.ripple.com:51235", #this will be connected to if no peers are currently available from the peer file
+    #"full_history_peers": ["s2.ripple.com"], # we will use these to backfill our transaction history (in a later version)
+    "UNL": [], #if blank we populate from the validator site specified below
+    "validator_site": "https://vl.ripple.com",
+    "peer_file": "peers.txt",
+    "manifest_master_public_key": "ed2677abffd1b33ac6fbc3062b71f1e8397c1505e1c42c64d11ad1b28ff73f4734" #this is the key whose manfiests you will accept
 
-import traceback
+}
+
+#------------- end config
+
+# print to stderr if debug is on or override is specified
+def dprint(text, override_default = False):
+    if config['DEBUG'] or override_default:
+        sys.stderr.write(str(datetime.now()).split(".")[0] + ": " + str(text) + "\n")
+
+import sys
 from datetime import datetime
+dprint("[INF IM] Loading imports, including NACL, this may take a while or hang if you have low entropy on your system/device...")
+import traceback
+import time
 from ecdsa import SigningKey, SECP256k1
 from base58r import base58r
 from socket import *
@@ -24,35 +50,14 @@ import time
 import json
 import re
 import math
-import time
+import nacl.signing
+import nacl.encoding
 import os
-import sys
 from util import *
+dprint("[INF IM] All imports loaded!")
 
 #------------- start config
 
-
-config = {
-    #---stuff you will want to configure is immediately below
-    "connection_limit": 2, # maximum number of simulatenous peer connections to maintain
-    "allow_write_to_peer_file": True, # you most likely want to change this to false if you run on an embedded device
-    "write_to_stdout": True, # if True metadata will be written on stdout
-    "write_to_file": True, # if True metadata will be written to ./<raccount>/tx/<txid> 
-    #--- you probably don't want to change anything under this point
-    "DEBUG": True,
-    "bootstrap_server": "s1.ripple.com:51235", #this will be connected to if no peers are currently available from the peer file
-    #"full_history_peers": ["s2.ripple.com"], # we will use these to backfill our transaction history (in a later version)
-    "UNL": [], #if blank we populate from the validator site specified below
-    "validator_site": "https://vl.ripple.com",
-    "peer_file": "peers.txt"
-}
-
-#------------- end config
-
-# print to stderr if debug is on or override is specified
-def dprint(text, override_default = False):
-    if config['DEBUG'] or override_default:
-        sys.stderr.write(str(datetime.now()).split(".")[0] + ": " + str(text) + "\n")
 
 
 # these are global state variables
@@ -131,10 +136,11 @@ class xrpl_ultralite:
                     dprint("[ERR VL] Invalid UNL specified, keys should be 33 bytes and of type bytes")
                     quit()
         elif type(self.config['validator_site']) == str and len(self.config['validator_site']) > 0:
+            dprint("[INF VL] Loading manifest from validator site " + self.config['validator_site'])
             context = ssl._create_unverified_context()
             vl = urllib.request.urlopen(config['validator_site'],  context=context).read().decode('utf-8')
             vl = json.loads(vl)
-            if vl['public_key'].upper() != 'ED2677ABFFD1B33AC6FBC3062B71F1E8397C1505E1C42C64D11AD1B28FF73F4734':
+            if vl['public_key'].lower() != config['manifest_master_public_key']:
                 dprint("[INF VL] Attempted to fetch validator list from " + self.config['validator_site'] + " but found unknown list signing key!")
                 exit(1)
 
@@ -144,16 +150,46 @@ class xrpl_ultralite:
                 dprint("[ERR VL] Validator list site returned invalid format", True)
                 quit()
 
-
-            #todo: check validator list signature here
-
-            payload = base64.b64decode(vl['blob'])
-#            manifest = base64.b64decode(vl['manifest'])
-#            signature = from_hex(vl['signature'])
-            #verify_key = nacl.signing.VerifyKey(vl['public_key'][2:], encoder=nacl.encoding.HexEncoder)
-            #print("verification: " + str(bytes(verify_key.verify(vl['blob'], 'utf-8'), from_hex(vl['signature']))))#, encoder=nacl.encoding.HexEncoder)))
+            rawmanifest = base64.b64decode(vl['manifest'])
+            manifest = parse_stobject(base64.b64decode(vl['manifest']), False, False)
             
-        
+#Sequence: 1
+#PublicKey: ed2677abffd1b33ac6fbc3062b71f1e8397c1505e1c42c64d11ad1b28ff73f4734
+#SigningPubKey: ed5d009c48b90f8a1d63d5f6b31f9c63c07738736326f32101144fb531e65a7021
+#Signature: c5720e77740412d560cc4032c8b36c30c07a5272b5278e9d62670c135d55d7b1a4712f3b72722a2da3726022619dba45ee6dbae37aa08d534d9fed8ffeeb0d01
+#MasterSignature: dccd04394fb7f61981f2fc1f81eae75d9203435fa8d1d9ee5e35fbde80cb82c69cc17ccb05539d069480b09c180fe9d6f1869269c38712c59a3e5a1fd3912c02
+
+            masterkey = from_hex(config['manifest_master_public_key'])#vl['public_key'])#[1:]
+            
+            mastersig = manifest['MasterSignature']
+            signingkey = manifest['SigningPubKey']#[1:]
+            payload = base64.b64decode(vl['blob'])
+            manifest = base64.b64decode(vl['manifest'])
+            signature = from_hex(vl['signature'])
+            
+            dprint("[INF MN] Master key " + to_hex(masterkey))
+            dprint("[INF MN] Signing key " + to_hex(signingkey))
+
+            # the manifest needs to be recast without signing fields, in order to be verified
+            # the form of the stobject is generic but starts with a 32bit int 'M' 'A' 'N' '\x00'
+            # we don't have a full STObject builder so we're just going to do some byte manipulation to get the existing binary into this form
+            # the length of the manifest st object with no signature feilds is 75, this shouldn't change
+
+            sigfreemanifest = b'MAN\x00' + rawmanifest[:75] 
+            verify_master_key = nacl.signing.VerifyKey(masterkey[1:])
+           # print("verification - 1: " + to_hex(verify_master_key.verify(sigfreemanifest, mastersig)))
+            try:
+                verify_master_key.verify(sigfreemanifest, mastersig)
+            except:
+                dprint("[ERR MN] Manifest signature verification failed", True)
+                exit(1)
+
+            # execution to here means manifest was signed correctly by master key
+            dprint("[INF MN] Manifest signature successfully verified against master key")
+
+            #todo: verify signing key is validly structured
+            #todo: check sequence number and revocations
+
             payload = json.loads(payload)
             st = base64.b64decode(payload['validators'][0]['manifest'])
             for v in payload['validators']:
@@ -161,7 +197,7 @@ class xrpl_ultralite:
                 sto = parse_stobject(base64.b64decode(v['manifest']), False, False)
                 self.config['UNL'].append(sto['SigningPubKey']) 
 
-            dprint("[INF VL] Loaded a UNL from validator site " + self.config['validator_site'] + " consisting of " + str(len(self.config['UNL'])) + " validators")
+            dprint("[INF VL] Successfully loaded " + str(len(self.config['UNL'])) + " validators")
         else:
             dprint("[ERR VL] You must specified either a UNL or a validator list site", True)
             quit()
