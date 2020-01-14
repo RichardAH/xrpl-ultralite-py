@@ -153,16 +153,12 @@ class xrpl_ultralite:
             rawmanifest = base64.b64decode(vl['manifest'])
             manifest = parse_stobject(base64.b64decode(vl['manifest']), False, False)
             
-#Sequence: 1
-#PublicKey: ed2677abffd1b33ac6fbc3062b71f1e8397c1505e1c42c64d11ad1b28ff73f4734
-#SigningPubKey: ed5d009c48b90f8a1d63d5f6b31f9c63c07738736326f32101144fb531e65a7021
-#Signature: c5720e77740412d560cc4032c8b36c30c07a5272b5278e9d62670c135d55d7b1a4712f3b72722a2da3726022619dba45ee6dbae37aa08d534d9fed8ffeeb0d01
-#MasterSignature: dccd04394fb7f61981f2fc1f81eae75d9203435fa8d1d9ee5e35fbde80cb82c69cc17ccb05539d069480b09c180fe9d6f1869269c38712c59a3e5a1fd3912c02
-
             masterkey = from_hex(config['manifest_master_public_key'])#vl['public_key'])#[1:]
             
             mastersig = manifest['MasterSignature']
-            signingkey = manifest['SigningPubKey']#[1:]
+
+            signingkey = manifest['SigningPubKey']
+
             payload = base64.b64decode(vl['blob'])
             manifest = base64.b64decode(vl['manifest'])
             signature = from_hex(vl['signature'])
@@ -187,14 +183,34 @@ class xrpl_ultralite:
             # execution to here means manifest was signed correctly by master key
             dprint("[INF MN] Manifest signature successfully verified against master key")
 
+            # check payload signature
+            payload_signature = from_hex(vl['signature'])
+            verify_signing_key = nacl.signing.VerifyKey(signingkey[1:])
+            try:
+                verify_signing_key.verify(payload, payload_signature)
+            except:
+                dprint("[ERR VL] Validator list signature verification failed", True)
+                exit(1)
+
+            # execution to here means the validator list payload was correctly signed against the trust chain
+
             #todo: verify signing key is validly structured
             #todo: check sequence number and revocations
 
+            # now parse the payload and check every signature before adding each validator to the UNL
             payload = json.loads(payload)
             st = base64.b64decode(payload['validators'][0]['manifest'])
             for v in payload['validators']:
-                #todo: check signatures of each validator here
-                sto = parse_stobject(base64.b64decode(v['manifest']), False, False)
+                rawmanifest = base64.b64decode(v['manifest'])
+                sto = parse_stobject(rawmanifest, False, False)
+                verify_signing_key = nacl.signing.VerifyKey(sto['PublicKey'][1:])
+                sigfreemanifest = b'MAN\x00' + rawmanifest[:75]
+                try:
+                    verify_signing_key.verify(sigfreemanifest, sto['MasterSignature'])
+                except Exception as e:
+                    dprint("[ERR MN] Validator " + to_hex(sto['PublicKey']) + "manifest signature verification failed", True)
+                    exit(1)
+
                 self.config['UNL'].append(sto['SigningPubKey']) 
 
             dprint("[INF VL] Successfully loaded " + str(len(self.config['UNL'])) + " validators")
