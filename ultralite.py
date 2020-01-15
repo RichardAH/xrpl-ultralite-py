@@ -266,7 +266,7 @@ class xrpl_ultralite:
         f = open(self.config['peer_file'], "w")
         if f:
             for ip in self.peers:
-                f.write(ip)
+                f.write(ip + "\n")
             f.close()
         else:
             dprint("[ERR FS] Could not open peer file for writing " + self.config['peer_file'])
@@ -1199,13 +1199,28 @@ class xrpl_ultralite:
                 
                 if message_type == 41: #(mtVALIDATION)
                     #todo check if validations are from our selected UNL
-                    sto = parse_stobject(message.validation, False, False)#True)
+                    sto = parse_stobject(message.validation, False, False)
 
                     ledger_hash = sto['LedgerHash']
                     ledger_seq = sto['LedgerSequence'] # int(message.validation.hex()[12:20], 16) #todo change this to pull from sto
                     
                     signing_key = sto['SigningPubKey']
 
+                    # check if the signing key is in our UNL
+                    if not signing_key in config['UNL']:
+                        continue
+
+                    # these are secp256k1 signatures
+                    sig = sto['Signature']
+                    vk = ecdsa.VerifyingKey.from_string(signing_key, curve=ecdsa.SECP256k1)
+                    h = SHA512H(b'VAL\x00' + message.validation[:117]) # 117 is the offset after which there are signatures and someitmes ammendment voting
+                    try:
+                        vk.verify_digest(sig, h, sigdecode=ecdsa.util.sigdecode_der)
+                    except Exception as e:
+                        dprint("[ERR VA] UNL validation continaing an invalid signature from " + to_hex(signing_key), True)
+                        continue
+                
+            
                     if not ledger_hash in validations:
                         validations[ledger_hash] = {}
 
@@ -1219,6 +1234,8 @@ class xrpl_ultralite:
                     for x in to_prune:
                         del validations[x]
         
+
+                
 
                     #todo: check validation signature
                     if signing_key in config['UNL'] and not signing_key in validations[ledger_hash]:
