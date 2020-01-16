@@ -21,7 +21,7 @@ config = {
 
 #------------- end config
 
-UL_VERSION="1.0"
+UL_VERSION="1.0.1"
 FILE_VERSION="1.1"
 
 # print to stderr if debug is on or override is specified
@@ -1246,9 +1246,13 @@ class xrpl_ultralite:
                                 if 'Destination' in tx and account['raw'] == tx['Destination']:
                                     seq = -1
 
+                                lls = self.last_ledger_seq_seen + 5
+                                if 'LastLedgerSequence' in tx:
+                                    lls = tx['LastLedgerSequence']
+
                                 account['wanted_tx'][txid] = {
                                     "ledger_seq_no_at_discovery": self.last_ledger_seq_seen,
-                                    "max_ledger_seq_no": tx['LastLedgerSequence'],
+                                    "max_ledger_seq_no": lls,
                                     "aggression": 3
                                 }
                                 dprint('[ASK TX] ' + to_hex(txid))
