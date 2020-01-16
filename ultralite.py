@@ -15,7 +15,6 @@ config = {
     "validator_site": "https://vl.ripple.com",
     "peer_file": "peers.txt",
     "manifest_master_public_key": "ed2677abffd1b33ac6fbc3062b71f1e8397c1505e1c42c64d11ad1b28ff73f4734" #this is the key whose manfiests you will accept
-
 }
 
 #------------- end config
@@ -53,6 +52,12 @@ import math
 import nacl.signing
 import nacl.encoding
 import os
+import fastecdsa.encoding
+import fastecdsa.encoding.der
+import fastecdsa.encoding.sec1
+import fastecdsa.curve
+import fastecdsa.ecdsa
+
 from util import *
 dprint("[INF IM] All imports loaded!")
 
@@ -273,7 +278,7 @@ class xrpl_ultralite:
 
     def connect(self, server):
         server = server.replace("\r", "").replace("\n", "")       
-        dprint("[TRY CX] " + server + "\tEXISTING CONNECTIONS = " + str(len(self.connections)) )
+        dprint("[TRY CX] EXISTING CONNECTIONS = " + str(len(self.connections)) + "\t Now attempting connection to " + server )
         
         parts = server.split(":")
         port = 51235
@@ -1211,15 +1216,14 @@ class xrpl_ultralite:
                         continue
 
                     # these are secp256k1 signatures
+                    # todo: convert other parts of this program that use secp256k1 to fastecdsa
                     sig = sto['Signature']
-                    vk = ecdsa.VerifyingKey.from_string(signing_key, curve=ecdsa.SECP256k1)
-                    h = SHA512H(b'VAL\x00' + message.validation[:117]) # 117 is the offset after which there are signatures and someitmes ammendment voting
-                    try:
-                        vk.verify_digest(sig, h, sigdecode=ecdsa.util.sigdecode_der)
-                    except Exception as e:
+                    vk = fastecdsa.encoding.sec1.SEC1Encoder.decode_public_key(signing_key, curve=fastecdsa.curve.secp256k1)
+                    h = to_hex(SHA512H(b'VAL\x00' + message.validation[:117])) # 117 is the offset after which there are signatures and someitmes ammendment voting
+                    sig = fastecdsa.encoding.der.DEREncoder.decode_signature(sig)
+                    if not fastecdsa.ecdsa.verify(sig,  h, vk, curve=fastecdsa.curve.secp256k1, hashfunc=CPASS):
                         dprint("[ERR VA] UNL validation continaing an invalid signature from " + to_hex(signing_key), True)
                         continue
-                
             
                     if not ledger_hash in validations:
                         validations[ledger_hash] = {}

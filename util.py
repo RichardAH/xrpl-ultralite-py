@@ -77,6 +77,14 @@ def SHA512HP(p, b):
 def XOR(b1, b2):
     return bytes(map(operator.xor, b1, b2))
 
+class CPASS:
+    msg = b''
+    def __init__(self, msg):
+        self.msg = msg
+
+    def hexdigest(self):
+        return str(self.msg, 'utf-8')
+
 #convert from numerical message type to string
 def peer_message_type_to_string(mtype):
     x = mtype
