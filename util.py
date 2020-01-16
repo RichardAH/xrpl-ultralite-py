@@ -385,7 +385,13 @@ def parse_stobject(x, print_out = False, hex_encoded_bin_fields = False):
             elif typecode == 18:
                 inpath = True
                 continue
-
+            
+            #todo: convert numeric success/failure codes to readable/symbil form?
+            #elif typecode == 16 and fieldcode == 3:
+            #    val = int(to_hex(x[upto:upto+size]), 16)
+                
+            #    add_entry(sto, fieldname, val)
+ 
             else:
                 print("warning could not determine size of stobject type=" + str(typecode) + " field=" + str(fieldcode))
                 return False

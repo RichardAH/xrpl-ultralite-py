@@ -5,7 +5,7 @@ config = {
     #---stuff you will want to configure is immediately below
     "connection_limit": 2, # maximum number of simulatenous peer connections to maintain
     "allow_write_to_peer_file": True, # you most likely want to change this to false if you run on an embedded device
-    "write_to_stdout": False, # if True metadata will be written on stdout
+    "write_to_stdout": True,# False, # if True metadata will be written on stdout
     "write_to_file": True, # if True metadata will be written to ./<raccount>/tx/<txid> 
     #--- you probably don't want to change anything under this point
     "DEBUG": True,
@@ -136,7 +136,6 @@ class xrpl_ultralite:
         x = None
         y = None
 
-        WRITE_LOCK.acquire()
         f = open(self.config['peer_file'], "r+")
         if f:
             content = f.readlines()
@@ -145,7 +144,6 @@ class xrpl_ultralite:
                 self.peers.add(ip)
         else:
             dprint("[ERR FS] Could not open peer file for reading and writing " + self.config['peer_file'])
-        WRITE_LOCK.release()
 
         self.peers.add(config['bootstrap_server'])
  
@@ -578,6 +576,7 @@ class xrpl_ultralite:
         
 
         vl = parse_vlencoded(nodedata[:-33])
+        tx = parse_stobject(vl[0], False, True)
         md = parse_stobject(vl[1], False, True)
 
         if 'AffectedNodes' in md and 'ModifiedNode' in md['AffectedNodes']:
@@ -601,18 +600,22 @@ class xrpl_ultralite:
                     #dprint(n['FinalFields'])#['Account'] + " != " + to_hex(self.accounts[acc]['raw']))
                     continue
 
+
                 ptxid = from_hex(n['PreviousTxnID'])
                 ptxseq = n['PreviousTxnLgrSeq']
 
+                final_output = "{\n'txid': '" + to_hex(txid) + "',\n'tx': " + str(tx) + ",\n'metadata': " + str(md) + "\n}"
+
+                WRITE_LOCK.acquire()
                 if self.config['write_to_file']:
-                    WRITE_LOCK.acquire()
                     f = open(acc + "/tx/" + to_hex(txid), "w+")
-                    f.write( str(md))
+                    f.write( final_output )
                     f.close()
-                    WRITE_LOCK.release()
 
                 if self.config['write_to_stdout']:
-                    print(str(md))
+                    print( final_output )
+                    sys.stdout.flush()
+                WRITE_LOCK.release()
     
                 found_node = True
                 lastseenindex = (ledgerSeq << 32) + md['TransactionIndex']
@@ -926,6 +929,10 @@ class xrpl_ultralite:
                             
                             h = to_hex(x.nodedata)
                             txid = from_hex(h[-66:-2])
+
+                            #print("transaction:")
+                            #print(to_hex(x.nodedata))
+                            #parse_stobject(x.nodedata[:-1], True, False)
                             
                             for acc in self.accounts:
                                 if txid in self.accounts[acc]['wanted_tx']:
@@ -1242,6 +1249,7 @@ class xrpl_ultralite:
                     sig = fastecdsa.encoding.der.DEREncoder.decode_signature(sig)
                     if not fastecdsa.ecdsa.verify(sig,  h, vk, curve=fastecdsa.curve.secp256k1, hashfunc=CPASS):
                         dprint("[ERR VA] UNL validation continaing an invalid signature from " + to_hex(signing_key), True)
+                        parse_stobject(message.validation,True, False)
                         continue
             
                     if not ledger_hash in validations:
@@ -1258,9 +1266,6 @@ class xrpl_ultralite:
                         del validations[x]
         
 
-                
-
-                    #todo: check validation signature
                     if signing_key in config['UNL'] and not signing_key in validations[ledger_hash]:
                         validations[ledger_hash][signing_key] = ledger_seq
                    
@@ -1275,7 +1280,7 @@ class xrpl_ultralite:
                     self.last_ledger_seq_seen = ledger_seq
                     self.last_ledger_hash_seen = ledger_hash
                 
-                    dprint("[VAL LG] Validated ledger " +  str(ledger_seq) + " received", True)
+                    dprint("[VAL LG] Validation " +  str(ledger_seq) + " received", True)
 
                     self.request_wanted_tx()
 
