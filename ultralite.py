@@ -144,7 +144,10 @@ class xrpl_ultralite:
             content = f.readlines()
             f.close()
             for ip in content:
-                self.peers.add(ip)
+                if ip == "":
+                    continue
+                
+                self.peers.add(ip.strip())
         else:
             dprint("[ERR FS] Could not open peer file for reading and writing " + self.config['peer_file'])
 
@@ -285,7 +288,9 @@ class xrpl_ultralite:
         f = open(self.config['peer_file'], "w")
         if f:
             for ip in self.peers:
-                f.write(ip + "\n")
+                if ip == "":
+                    continue
+                f.write(ip.strip() + "\n")
             f.close()
         else:
             dprint("[ERR FS] Could not open peer file for writing " + self.config['peer_file'])
