@@ -6,7 +6,7 @@ config = {
     "connection_limit": 2, # maximum number of simulatenous peer connections to maintain
     "allow_write_to_peer_file": True, # you most likely want to change this to false if you run on an embedded device
     "write_to_stdout": True,# False, # if True metadata will be written on stdout
-    "write_to_file": True, # if True metadata will be written to ./<raccount>/tx/<txid> 
+    "write_to_file": True, # if True metadata will be written to ./<raccount>/<tx_account>-<tx_seq>-<txid> 
     #--- you probably don't want to change anything under this point
     "DEBUG": True,
     "bootstrap_server": "s1.ripple.com:51235", #this will be connected to if no peers are currently available from the peer file
@@ -276,9 +276,6 @@ class xrpl_ultralite:
             }
             if not os.path.exists(acc):
                 os.mkdir(acc)
-
-            if not os.path.exists(acc + '/tx'):
-                os.mkdir(acc + '/tx')
 
     def write_peer_file(self):
         WRITE_LOCK.acquire()
@@ -577,7 +574,21 @@ class xrpl_ultralite:
 
         vl = parse_vlencoded(nodedata[:-33])
         tx = parse_stobject(vl[0], False, True)
+
         md = parse_stobject(vl[1], False, True)
+
+        final_output = "{\n'txid': '" + to_hex(txid) + "',\n'tx': " + str(tx) + ",\n'metadata': " + str(md) + "\n}"
+
+        WRITE_LOCK.acquire()
+        if self.config['write_to_file']:
+            f = open(acc + "/" + tx['Account'] + '-' + str(tx['Sequence']) + '-' + to_hex(txid), "w+")
+            f.write( final_output )
+            f.close()
+
+        if self.config['write_to_stdout']:
+            print( final_output )
+            sys.stdout.flush()
+        WRITE_LOCK.release()
 
         if 'AffectedNodes' in md and 'ModifiedNode' in md['AffectedNodes']:
             modified = md['AffectedNodes']['ModifiedNode']
@@ -604,18 +615,6 @@ class xrpl_ultralite:
                 ptxid = from_hex(n['PreviousTxnID'])
                 ptxseq = n['PreviousTxnLgrSeq']
 
-                final_output = "{\n'txid': '" + to_hex(txid) + "',\n'tx': " + str(tx) + ",\n'metadata': " + str(md) + "\n}"
-
-                WRITE_LOCK.acquire()
-                if self.config['write_to_file']:
-                    f = open(acc + "/tx/" + to_hex(txid), "w+")
-                    f.write( final_output )
-                    f.close()
-
-                if self.config['write_to_stdout']:
-                    print( final_output )
-                    sys.stdout.flush()
-                WRITE_LOCK.release()
     
                 found_node = True
                 lastseenindex = (ledgerSeq << 32) + md['TransactionIndex']
