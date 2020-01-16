@@ -19,12 +19,16 @@ config = {
 
 #------------- end config
 
+
+
 # print to stderr if debug is on or override is specified
 def dprint(text, override_default = False):
     if config['DEBUG'] or override_default:
         sys.stderr.write(str(datetime.now()).split(".")[0] + ": " + str(text) + "\n")
 
+
 import sys
+import signal
 from datetime import datetime
 dprint("[INF IM] Loading imports, including NACL, this may take a while or hang if you have low entropy on your system/device...")
 import traceback
@@ -57,15 +61,24 @@ import fastecdsa.encoding.der
 import fastecdsa.encoding.sec1
 import fastecdsa.curve
 import fastecdsa.ecdsa
-
+import threading
 from util import *
 dprint("[INF IM] All imports loaded!")
 
-#------------- start config
+WRITE_LOCK = threading.Lock()
 
+def die(retcode):
+    sys.stdout.flush()
+    
+    os._exit(retcode)
 
+def sigterm_handler(_signo, _stack_frame):
+    dprint("[SIG TM] Termination signal received, flushing buffers, bye!")
+    WRITE_LOCK.acquire()
+    die(0)
 
-# these are global state variables
+signal.signal(signal.SIGTERM, sigterm_handler)
+signal.signal(signal.SIGINT, sigterm_handler)
 
 class xrpl_ultralite:
 
@@ -123,6 +136,7 @@ class xrpl_ultralite:
         x = None
         y = None
 
+        WRITE_LOCK.acquire()
         f = open(self.config['peer_file'], "r+")
         if f:
             content = f.readlines()
@@ -131,6 +145,7 @@ class xrpl_ultralite:
                 self.peers.add(ip)
         else:
             dprint("[ERR FS] Could not open peer file for reading and writing " + self.config['peer_file'])
+        WRITE_LOCK.release()
 
         self.peers.add(config['bootstrap_server'])
  
@@ -147,13 +162,13 @@ class xrpl_ultralite:
             vl = json.loads(vl)
             if vl['public_key'].lower() != config['manifest_master_public_key']:
                 dprint("[INF VL] Attempted to fetch validator list from " + self.config['validator_site'] + " but found unknown list signing key!")
-                exit(1)
+                die(1)
 
             if 'signature' in vl and 'public_key' in vl and 'blob' in vl and 'manifest' in vl or len(vl['public_key']) != 33 or lower(vl['public_key'][0:2]) != 'ed':
                 pass
             else:
                 dprint("[ERR VL] Validator list site returned invalid format", True)
-                quit()
+                die(1)
 
             rawmanifest = base64.b64decode(vl['manifest'])
             manifest = parse_stobject(base64.b64decode(vl['manifest']), False, False)
@@ -183,7 +198,7 @@ class xrpl_ultralite:
                 verify_master_key.verify(sigfreemanifest, mastersig)
             except:
                 dprint("[ERR MN] Manifest signature verification failed", True)
-                exit(1)
+                die(1)
 
             # execution to here means manifest was signed correctly by master key
             dprint("[INF MN] Manifest signature successfully verified against master key")
@@ -195,7 +210,7 @@ class xrpl_ultralite:
                 verify_signing_key.verify(payload, payload_signature)
             except:
                 dprint("[ERR VL] Validator list signature verification failed", True)
-                exit(1)
+                die(1)
 
             # execution to here means the validator list payload was correctly signed against the trust chain
 
@@ -214,7 +229,7 @@ class xrpl_ultralite:
                     verify_signing_key.verify(sigfreemanifest, sto['MasterSignature'])
                 except Exception as e:
                     dprint("[ERR MN] Validator " + to_hex(sto['PublicKey']) + "manifest signature verification failed", True)
-                    exit(1)
+                    die(1)
 
                 self.config['UNL'].append(sto['SigningPubKey']) 
 
@@ -268,6 +283,7 @@ class xrpl_ultralite:
                 os.mkdir(acc + '/tx')
 
     def write_peer_file(self):
+        WRITE_LOCK.acquire()
         f = open(self.config['peer_file'], "w")
         if f:
             for ip in self.peers:
@@ -275,6 +291,7 @@ class xrpl_ultralite:
             f.close()
         else:
             dprint("[ERR FS] Could not open peer file for writing " + self.config['peer_file'])
+        WRITE_LOCK.release()
 
     def connect(self, server):
         server = server.replace("\r", "").replace("\n", "")       
@@ -588,9 +605,11 @@ class xrpl_ultralite:
                 ptxseq = n['PreviousTxnLgrSeq']
 
                 if self.config['write_to_file']:
+                    WRITE_LOCK.acquire()
                     f = open(acc + "/tx/" + to_hex(txid), "w+")
                     f.write( str(md))
                     f.close()
+                    WRITE_LOCK.release()
 
                 if self.config['write_to_stdout']:
                     print(str(md))
@@ -799,7 +818,7 @@ class xrpl_ultralite:
 
             try:
                 readable, writable, exceptional = select.select([*self.connections], writable, [*self.connections])
-            except:
+            except Exception as e:
                 to_dump = []
                 for con in self.connections:
                     if con.fileno() < 0:
