@@ -5,10 +5,10 @@ config = {
     #---stuff you will want to configure is immediately below
     "connection_limit": 2, # maximum number of simulatenous peer connections to maintain
     "allow_write_to_peer_file": True, # you most likely want to change this to false if you run on an embedded device
-    "write_to_stdout": True,# False, # if True metadata will be written on stdout
+    "write_to_stdout": False, # if True metadata will be written on stdout
     "write_to_file": True, # if True metadata will be written to ./<raccount>/<tx_account>-<tx_seq>-<txid> 
     #--- you probably don't want to change anything under this point
-    "DEBUG": True,
+    "DEBUG": False, # this writes a very comphrensive log of behaviour to stderr, you probably don't need it
     "bootstrap_server": "s1.ripple.com:51235", #this will be connected to if no peers are currently available from the peer file
     #"full_history_peers": ["s2.ripple.com"], # we will use these to backfill our transaction history (in a later version)
     "UNL": [], #if blank we populate from the validator site specified below
@@ -19,17 +19,18 @@ config = {
 
 #------------- end config
 
-
+UL_VERSION="1.0"
+FILE_VERSION="1.0"
 
 # print to stderr if debug is on or override is specified
 def dprint(text, override_default = False):
     if config['DEBUG'] or override_default:
         sys.stderr.write(str(datetime.now()).split(".")[0] + ": " + str(text) + "\n")
 
-
 import sys
 import signal
 from datetime import datetime
+dprint("[INF UL] XRPL Ultralite v" + UL_VERSION + " producing tx output format: v" + FILE_VERSION + ". Written by: Richard Holland / @codetsunami", True)
 dprint("[INF IM] Loading imports, including NACL, this may take a while or hang if you have low entropy on your system/device...")
 import traceback
 import time
@@ -154,7 +155,7 @@ class xrpl_ultralite:
                     dprint("[ERR VL] Invalid UNL specified, keys should be 33 bytes and of type bytes")
                     quit()
         elif type(self.config['validator_site']) == str and len(self.config['validator_site']) > 0:
-            dprint("[INF VL] Loading manifest from validator site " + self.config['validator_site'])
+            dprint("[INF VL] Loading manifest from validator site " + self.config['validator_site'], True)
             context = ssl._create_unverified_context()
             vl = urllib.request.urlopen(config['validator_site'],  context=context).read().decode('utf-8')
             vl = json.loads(vl)
@@ -231,7 +232,7 @@ class xrpl_ultralite:
 
                 self.config['UNL'].append(sto['SigningPubKey']) 
 
-            dprint("[INF VL] Successfully loaded " + str(len(self.config['UNL'])) + " validators")
+            dprint("[INF VL] Successfully loaded " + str(len(self.config['UNL'])) + " validators", True)
         else:
             dprint("[ERR VL] You must specified either a UNL or a validator list site", True)
             quit()
@@ -290,7 +291,7 @@ class xrpl_ultralite:
 
     def connect(self, server):
         server = server.replace("\r", "").replace("\n", "")       
-        dprint("[TRY CX] EXISTING CONNECTIONS = " + str(len(self.connections)) + "\t Now attempting connection to " + server )
+        dprint("[TRY CX] EXISTING CONNECTIONS = " + str(len(self.connections)) + "\t Now attempting connection to " + server, True )
         
         parts = server.split(":")
         port = 51235
@@ -577,15 +578,23 @@ class xrpl_ultralite:
 
         md = parse_stobject(vl[1], False, True)
 
-        final_output = "{\n'txid': '" + to_hex(txid) + "',\n'tx': " + str(tx) + ",\n'metadata': " + str(md) + "\n}"
+        final_output = "{\n'ver': '" + FILE_VERSION + "',\n'txid': '" + to_hex(txid) + "',\n'tx': " + str(tx) + ",\n'metadata': " + str(md) + "\n}"
+
+        fn = acc + "/" + tx['Account'] + '-' + str(tx['Sequence']) + '-' + to_hex(txid)
+        dprint("[OUT TX] " + tx['Account'] + '-' + str(tx['Sequence']) + '-' + to_hex(txid), True)
 
         WRITE_LOCK.acquire()
         if self.config['write_to_file']:
-            f = open(acc + "/" + tx['Account'] + '-' + str(tx['Sequence']) + '-' + to_hex(txid), "w+")
+            
+            if os.path.isfile(fn): # if we were back filling we've finished doing that now so no need to continue tracing 
+                WRITE_LOCK.release()
+                return True
+            f = open(fn, "w+")
             f.write( final_output )
             f.close()
 
         if self.config['write_to_stdout']:
+            #todo: provide a way to specify at commandline the minimum account seq number to accept
             print( final_output )
             sys.stdout.flush()
         WRITE_LOCK.release()
@@ -1279,7 +1288,7 @@ class xrpl_ultralite:
                     self.last_ledger_seq_seen = ledger_seq
                     self.last_ledger_hash_seen = ledger_hash
                 
-                    dprint("[VAL LG] Validation " +  str(ledger_seq) + " received", True)
+                    dprint("[VAL LG] UNL succesfully validated ledger seq " +  str(ledger_seq), True)
 
                     self.request_wanted_tx()
 
