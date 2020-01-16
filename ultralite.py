@@ -3,7 +3,7 @@
 # Todo: remove bad peers after X failed connections
 config = {
     #---stuff you will want to configure is immediately below
-    "connection_limit": 2, # maximum number of simulatenous peer connections to maintain
+    "connection_limit": 3, # maximum number of simulatenous peer connections to maintain
     "allow_write_to_peer_file": True, # you most likely want to change this to false if you run on an embedded device
     "write_to_stdout": False, # if True metadata will be written on stdout
     "write_to_file": True, # if True metadata will be written to ./<raccount>/<tx_account>-<tx_seq>-<txid> 
@@ -50,7 +50,6 @@ import hashlib
 import base64
 import select
 import ecdsa
-import time
 import json
 import re
 import math
@@ -63,6 +62,7 @@ import fastecdsa.encoding.sec1
 import fastecdsa.curve
 import fastecdsa.ecdsa
 import threading
+import random
 from util import *
 dprint("[INF IM] All imports loaded!")
 
@@ -545,6 +545,8 @@ class xrpl_ultralite:
         return True
 
 
+    already_output = {}
+
     def process_tx_node(self, txid, acc, ledgerSeq, ledgerHash, nodedata, proof):
 
         #dprint("process_tx_node")
@@ -571,7 +573,22 @@ class xrpl_ultralite:
         if acc in self.accounts and 'wanted_tx' in self.accounts[acc] and txid in self.accounts[acc]['wanted_tx']:
             del self.accounts[acc]['wanted_tx'][txid]
 
-        
+        if txid in self.already_output:
+            return True 
+
+        t = time.time()
+        self.already_output[txid] = t
+
+        to_del = []
+        for x in self.already_output:
+            if t - self.already_output[x] > 500:
+                to_del.append(x)
+ 
+        for x in to_del:
+            try:
+                del self.already_output[x]
+            except:
+                pass
 
         vl = parse_vlencoded(nodedata[:-33])
         tx = parse_stobject(vl[0], False, True)
@@ -586,9 +603,9 @@ class xrpl_ultralite:
         WRITE_LOCK.acquire()
         if self.config['write_to_file']:
             
-            if os.path.isfile(fn): # if we were back filling we've finished doing that now so no need to continue tracing 
-                WRITE_LOCK.release()
-                return True
+            #if os.path.isfile(fn): # if we were back filling we've finished doing that now so no need to continue tracing 
+            #    WRITE_LOCK.release()
+            #    return True
             f = open(fn, "w+")
             f.write( final_output )
             f.close()
@@ -766,8 +783,10 @@ class xrpl_ultralite:
             for acc in self.accounts:
                 dprint("[ERR TX] Dropped transaction " + to_hex(txid) + "... couldn't locate it", True) #ledger_added: " + str(self.accounts[acc]['wanted_tx'][txid]['ledger_seq_no_at_discovery']) + " max: " + str(self.accounts[acc]['wanted_tx'][txid]['max_ledger_seq_no']))
                 self.accounts[acc]['dropped_tx'].append(txid)
-                del self.accounts[acc]['wanted_tx'][txid]
-
+                try:
+                    del self.accounts[acc]['wanted_tx'][txid]
+                except:
+                    pass
         self.request_tx_batch(tx_set)
 
     def make_random_connection(self):
@@ -1248,6 +1267,9 @@ class xrpl_ultralite:
                     #todo check if validations are from our selected UNL
                     sto = parse_stobject(message.validation, False, False)
 
+                    if 'Amendments' in sto: #we'll hash chain back from the next ledger no reason to deal with these special cases
+                        continue
+
                     ledger_hash = sto['LedgerHash']
                     ledger_seq = sto['LedgerSequence'] # int(message.validation.hex()[12:20], 16) #todo change this to pull from sto
                     
@@ -1303,8 +1325,19 @@ class xrpl_ultralite:
                     dprint("[ASK LG] " + to_hex(ledger_hash)) 
                     self.wanted_ledgers[ledger_seq] = ledger_hash
 
-                    already_requested = set()
+                    already_requested = set() 
+                    # this can be overwhelming and get us kicked from our peers
+                    # so let's limit to a random set of 10 wanted ledgers
+
+                    to_request = []
+                    if len(self.wanted_ledgers) > 10:
+                        to_request = random.sample(range(1, len(self.wanted_ledgers)), 10)
+
+                    counter = 0
                     for ls in self.wanted_ledgers:
+                        counter += 1
+                        if len(self.wanted_ledgers) > 10 and not counter in to_request:
+                            continue 
                         gl = ripple_pb2.TMGetLedger()
                         if ls in self.wanted_ledgers and self.wanted_ledgers[ls] != False:
                             gl.ledgerHash = self.wanted_ledgers[ls]
