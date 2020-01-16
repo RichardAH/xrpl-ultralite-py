@@ -2,6 +2,9 @@
 ## What is this?
 A node that connects to the XRPL with a tiny footprint.
 
+## Obtaining it
+Fork the repo or download as a zip above on the right. Unzip and use. Development will continue in a development branch.
+
 ## Usage
 python3 ultralite.py rMyAccountOfInterest ... [ rMoreAccountsOfInterest ]
 
