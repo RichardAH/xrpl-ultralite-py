@@ -1253,7 +1253,7 @@ class xrpl_ultralite:
                     # todo: convert other parts of this program that use secp256k1 to fastecdsa
                     sig = sto['Signature']
                     vk = fastecdsa.encoding.sec1.SEC1Encoder.decode_public_key(signing_key, curve=fastecdsa.curve.secp256k1)
-                    h = to_hex(SHA512H(b'VAL\x00' + message.validation[:117])) # 117 is the offset after which there are signatures and someitmes ammendment voting
+                    h = to_hex(SHA512H(b'VAL\x00' + message.validation[:-len(sto['Signature'])-2])) #hackyhackyhacky
                     sig = fastecdsa.encoding.der.DEREncoder.decode_signature(sig)
                     if not fastecdsa.ecdsa.verify(sig,  h, vk, curve=fastecdsa.curve.secp256k1, hashfunc=CPASS):
                         dprint("[ERR VA] UNL validation continaing an invalid signature from " + to_hex(signing_key), True)
