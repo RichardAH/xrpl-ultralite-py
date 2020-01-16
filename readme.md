@@ -11,8 +11,11 @@ Depending on the config in the top of ultralite.py you will either receive trans
 ## Output format
 If you are outputing to files you will see filename of the form:
 ```
-l<ledger seq number>-<account>-<account seq number>-<tx hash>```
+l<ledger seq number>-<account>-<account seq number>-<tx hash>
+```
+
 Inside each of these is json in the following form:
+
 ```json
 {
 'ver': 1.1,
