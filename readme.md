@@ -16,7 +16,7 @@ l<ledger seq number>-<account>-<account seq number>-<tx hash>
 
 Inside each of these is json in the following form:
 
-```json
+```
 {
 'ver': 1.1,
 'ledger': 52773555,
