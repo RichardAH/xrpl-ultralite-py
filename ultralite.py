@@ -1,6 +1,8 @@
 # XRPL UltraLite
-#   Author: Richard Holland
-# Todo: remove bad peers after X failed connections
+# A lightweight peer for the XRP ledger that records transactions and metadata affecting a user specified set of accounts
+# Date: 16 Jan 2020
+# Author: Richard Holland
+
 config = {
     #---stuff you will want to configure is immediately below
     "connection_limit": 3, # maximum number of simulatenous peer connections to maintain
