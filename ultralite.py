@@ -873,15 +873,23 @@ class xrpl_ultralite:
                 if type(raw_packet) == int:
                     continue            
 
-                if not self.connections[connection]['finished_connecting']:
-                    if self.finish_connecting(connection, raw_packet):
-                        self.connections[connection]['finished_connecting'] = True
-                    else:
-                        try:
-                            del self.connections[connection]
-                        except:
-                            pass
+                try:
+                    if not self.connections[connection]['finished_connecting']:
+                        if self.finish_connecting(connection, raw_packet):
+                            self.connections[connection]['finished_connecting'] = True
+                        else:
+                            try:
+                                del self.connections[connection]
+                            except:
+                                pass
+                        continue
+                except:
+                    try:
+                        del self.connections[connection]
+                    except:
+                        pass
                     continue
+                
 
                 if fd in partial:
                     partial[fd]['message_upto'] += len(raw_packet)
