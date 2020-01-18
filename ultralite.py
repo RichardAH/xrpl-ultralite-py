@@ -956,7 +956,10 @@ class xrpl_ultralite:
                         connection.send(encode_peer_message('mtPing', message)) 
                     except:
                         if connection in connections:
-                            del connections[connection]
+                            try:
+                                del self.connections[connection]
+                            except:
+                                pass
                             continue
 
                 # these are the state xfer messages we're interested in
